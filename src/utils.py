@@ -7,12 +7,21 @@ from typing import List, Dict, Any, Optional, Tuple
 import json
 from supabase import create_client, Client
 from urllib.parse import urlparse
-import openai
+from pathlib import Path
+import requests
 import re
 import time
 
-# Load OpenAI API key for embeddings
-openai.api_key = os.getenv("OPENAI_API_KEY")
+JINA_API_URL = os.getenv("JINA_API_URL", "https://api.jina.ai/v1/embeddings")
+JINA_API_KEY = os.getenv("JINA_API_KEY")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "jina-embeddings-v3")
+JINA_EMBEDDING_TASK = os.getenv("JINA_EMBEDDING_TASK", "text-matching")
+JINA_RERANK_URL = os.getenv("JINA_RERANK_URL", "https://api.jina.ai/v1/rerank")
+JINA_RERANK_MODEL = os.getenv("JINA_RERANK_MODEL", "jina-reranker-v3")
+DEFAULT_EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
+
+LLM_API_KEY = os.getenv("LLM_API_KEY")
+LLM_API_BASE = os.getenv("LLM_API_BASE")
 
 def get_supabase_client() -> Client:
     """
@@ -31,7 +40,7 @@ def get_supabase_client() -> Client:
 
 def create_embeddings_batch(texts: List[str]) -> List[List[float]]:
     """
-    Create embeddings for multiple texts in a single API call.
+    Create embeddings for multiple texts in a single API call using Jina AI.
     
     Args:
         texts: List of texts to create embeddings for
@@ -42,16 +51,39 @@ def create_embeddings_batch(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
     
+    if not JINA_API_KEY:
+        raise ValueError("JINA_API_KEY must be set to create embeddings.")
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {JINA_API_KEY}"
+    }
+    
     max_retries = 3
     retry_delay = 1.0  # Start with 1 second delay
     
     for retry in range(max_retries):
         try:
-            response = openai.embeddings.create(
-                model="text-embedding-3-small", # Hardcoding embedding model for now, will change this later to be more dynamic
-                input=texts
+            payload = {
+                "model": EMBEDDING_MODEL,
+                "task": JINA_EMBEDDING_TASK,
+                "input": texts
+            }
+            response = requests.post(
+                JINA_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=60
             )
-            return [item.embedding for item in response.data]
+            response.raise_for_status()
+            data = response.json()
+            embeddings = [item["embedding"] for item in data.get("data", [])]
+            
+            if len(embeddings) != len(texts):
+                raise ValueError(
+                    f"Expected {len(texts)} embeddings but received {len(embeddings)} from Jina API."
+                )
+            return embeddings
         except Exception as e:
             if retry < max_retries - 1:
                 print(f"Error creating batch embeddings (attempt {retry + 1}/{max_retries}): {e}")
@@ -60,30 +92,37 @@ def create_embeddings_batch(texts: List[str]) -> List[List[float]]:
                 retry_delay *= 2  # Exponential backoff
             else:
                 print(f"Failed to create batch embeddings after {max_retries} attempts: {e}")
-                # Try creating embeddings one by one as fallback
                 print("Attempting to create embeddings individually...")
                 embeddings = []
                 successful_count = 0
                 
                 for i, text in enumerate(texts):
                     try:
-                        individual_response = openai.embeddings.create(
-                            model="text-embedding-3-small",
-                            input=[text]
+                        single_payload = {
+                            "model": EMBEDDING_MODEL,
+                            "task": JINA_EMBEDDING_TASK,
+                            "input": [text]
+                        }
+                        single_response = requests.post(
+                            JINA_API_URL,
+                            headers=headers,
+                            json=single_payload,
+                            timeout=60
                         )
-                        embeddings.append(individual_response.data[0].embedding)
+                        single_response.raise_for_status()
+                        single_data = single_response.json()
+                        embeddings.append(single_data["data"][0]["embedding"])
                         successful_count += 1
                     except Exception as individual_error:
                         print(f"Failed to create embedding for text {i}: {individual_error}")
-                        # Add zero embedding as fallback
-                        embeddings.append([0.0] * 1536)
+                        embeddings.append([0.0] * DEFAULT_EMBEDDING_DIM)
                 
                 print(f"Successfully created {successful_count}/{len(texts)} embeddings individually")
                 return embeddings
 
 def create_embedding(text: str) -> List[float]:
     """
-    Create an embedding for a single text using OpenAI's API.
+    Create an embedding for a single text using the configured embedding provider.
     
     Args:
         text: Text to create an embedding for
@@ -93,11 +132,139 @@ def create_embedding(text: str) -> List[float]:
     """
     try:
         embeddings = create_embeddings_batch([text])
-        return embeddings[0] if embeddings else [0.0] * 1536
+        return embeddings[0] if embeddings else [0.0] * DEFAULT_EMBEDDING_DIM
     except Exception as e:
         print(f"Error creating embedding: {e}")
         # Return empty embedding if there's an error
-        return [0.0] * 1536
+        return [0.0] * DEFAULT_EMBEDDING_DIM
+
+
+def call_chat_completion(
+    messages: List[Dict[str, str]],
+    model: Optional[str] = None,
+    temperature: float = 0.3,
+    max_tokens: int = 200
+) -> str:
+    """
+    Call the configured chat completion endpoint (OpenRouter compatible).
+    """
+    if not LLM_API_KEY:
+        raise ValueError("LLM_API_KEY must be set for LLM calls.")
+    
+    if not LLM_API_BASE:
+        raise ValueError("LLM_API_BASE must be set to call the configured LLM.")
+    
+    model_choice = model or os.getenv("MODEL_CHOICE")
+    if not model_choice:
+        raise ValueError("MODEL_CHOICE must be set to call the LLM.")
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LLM_API_KEY}"
+    }
+    
+    payload = {
+        "model": model_choice,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
+    
+    response = requests.post(
+        f"{LLM_API_BASE.rstrip('/')}/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=120
+    )
+    response.raise_for_status()
+    data = response.json()
+    
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError):
+        raise ValueError(f"Unexpected response format from LLM: {data}")
+
+
+def jina_rerank_documents(
+    query: str,
+    documents: List[str],
+    top_n: Optional[int] = None,
+    model: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Rerank documents using Jina's rerank API.
+    """
+    if not documents:
+        return []
+    
+    if not JINA_API_KEY:
+        raise ValueError("JINA_API_KEY must be set to use reranking.")
+    
+    payload = {
+        "model": model or JINA_RERANK_MODEL,
+        "query": query,
+        "documents": documents,
+        "top_n": top_n or len(documents),
+        "return_documents": False
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {JINA_API_KEY}"
+    }
+    
+    try:
+        response = requests.post(
+            JINA_RERANK_URL,
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("data", [])
+    except Exception as e:
+        print(f"Error calling Jina rerank API: {e}")
+        return []
+
+
+def extract_text_from_pdf(file_path: Path) -> str:
+    """
+    Extract text from a PDF file.
+    """
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except ImportError as e:
+        raise ImportError(
+            "pypdf is required to process PDF files. Install it with `pip install pypdf`."
+        ) from e
+    
+    reader = PdfReader(str(file_path))
+    pages = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        pages.append(text)
+    return "\n\n".join(pages).strip()
+
+
+def load_local_document(file_path: str) -> str:
+    """
+    Load local file content, supporting Markdown, text, and PDF files.
+    """
+    path_obj = Path(file_path).expanduser()
+    if not path_obj.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    suffix = path_obj.suffix.lower()
+    if suffix in {".md", ".markdown", ".txt", ".rst", ".html"}:
+        with open(path_obj, "r", encoding="utf-8") as f:
+            return f.read()
+    elif suffix == ".pdf":
+        return extract_text_from_pdf(path_obj)
+    else:
+        # Attempt to read as UTF-8 text
+        with open(path_obj, "r", encoding="utf-8") as f:
+            return f.read()
 
 def generate_contextual_embedding(full_document: str, chunk: str) -> Tuple[str, bool]:
     """
@@ -125,19 +292,15 @@ Here is the chunk we want to situate within the whole document
 </chunk> 
 Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else."""
 
-        # Call the OpenAI API to generate contextual information
-        response = openai.chat.completions.create(
-            model=model_choice,
+        context = call_chat_completion(
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that provides concise contextual information."},
                 {"role": "user", "content": prompt}
             ],
+            model=model_choice,
             temperature=0.3,
             max_tokens=200
         )
-        
-        # Extract the generated context
-        context = response.choices[0].message.content.strip()
         
         # Combine the context with the original chunk
         contextual_text = f"{context}\n---\n{chunk}"
@@ -264,9 +427,10 @@ def add_documents_to_supabase(
             # Extract metadata fields
             chunk_size = len(contextual_contents[j])
             
-            # Extract source_id from URL
+            # Extract source_id, allowing metadata override
+            meta_source = batch_metadatas[j].get("source") if isinstance(batch_metadatas[j], dict) else None
             parsed_url = urlparse(batch_urls[j])
-            source_id = parsed_url.netloc or parsed_url.path
+            source_id = meta_source or parsed_url.netloc or parsed_url.path
             
             # Prepare data for insertion
             data = {
@@ -468,17 +632,17 @@ Based on the code example and its surrounding context, provide a concise summary
 """
     
     try:
-        response = openai.chat.completions.create(
-            model=model_choice,
+        summary = call_chat_completion(
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that provides concise code example summaries."},
                 {"role": "user", "content": prompt}
             ],
+            model=model_choice,
             temperature=0.3,
             max_tokens=100
         )
         
-        return response.choices[0].message.content.strip()
+        return summary.strip()
     
     except Exception as e:
         print(f"Error generating code example summary: {e}")
@@ -631,7 +795,7 @@ def extract_source_summary(source_id: str, content: str, max_length: int = 500) 
     """
     Extract a summary for a source from its content using an LLM.
     
-    This function uses the OpenAI API to generate a concise summary of the source content.
+    This function relies on the configured LLM (OpenRouter-compatible) to summarize the source content.
     
     Args:
         source_id: The source ID (domain)
@@ -662,19 +826,15 @@ The above content is from the documentation for '{source_id}'. Please provide a 
 """
     
     try:
-        # Call the OpenAI API to generate the summary
-        response = openai.chat.completions.create(
-            model=model_choice,
+        summary = call_chat_completion(
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that provides concise library/tool/framework summaries."},
                 {"role": "user", "content": prompt}
             ],
+            model=model_choice,
             temperature=0.3,
             max_tokens=150
         )
-        
-        # Extract the generated summary
-        summary = response.choices[0].message.content.strip()
         
         # Ensure the summary is not too long
         if len(summary) > max_length:

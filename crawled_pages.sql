@@ -23,7 +23,7 @@ create table crawled_pages (
     content text not null,
     metadata jsonb not null default '{}'::jsonb,
     source_id text not null,
-    embedding vector(1536),  -- OpenAI embeddings are 1536 dimensions
+    embedding vector(1024),  -- Jina embeddings (v3) output 1024 dimensions
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     
     -- Add a unique constraint to prevent duplicate chunks for the same URL
@@ -44,7 +44,7 @@ CREATE INDEX idx_crawled_pages_source_id ON crawled_pages (source_id);
 
 -- Create a function to search for documentation chunks
 create or replace function match_crawled_pages (
-  query_embedding vector(1536),
+  query_embedding vector(1024),
   match_count int default 10,
   filter jsonb DEFAULT '{}'::jsonb,
   source_filter text DEFAULT NULL
@@ -107,7 +107,7 @@ create table code_examples (
     summary text not null,  -- Summary of the code example
     metadata jsonb not null default '{}'::jsonb,
     source_id text not null,
-    embedding vector(1536),  -- OpenAI embeddings are 1536 dimensions
+    embedding vector(1024),  -- Jina embeddings (v3) output 1024 dimensions
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     
     -- Add a unique constraint to prevent duplicate chunks for the same URL
@@ -128,7 +128,7 @@ CREATE INDEX idx_code_examples_source_id ON code_examples (source_id);
 
 -- Create a function to search for code examples
 create or replace function match_code_examples (
-  query_embedding vector(1536),
+  query_embedding vector(1024),
   match_count int default 10,
   filter jsonb DEFAULT '{}'::jsonb,
   source_filter text DEFAULT NULL

@@ -6,7 +6,6 @@ the appropriate crawl method based on URL type (sitemap, txt file, or regular we
 Also includes AI hallucination detection and repository parsing tools using Neo4j knowledge graphs.
 """
 from mcp.server.fastmcp import FastMCP, Context
-from sentence_transformers import CrossEncoder
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -23,6 +22,8 @@ import os
 import re
 import concurrent.futures
 import sys
+import glob
+from datetime import datetime
 
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, MemoryAdaptiveDispatcher
 
@@ -39,7 +40,9 @@ from utils import (
     add_code_examples_to_supabase,
     update_source_info,
     extract_source_summary,
-    search_code_examples
+    search_code_examples,
+    jina_rerank_documents,
+    load_local_document
 )
 
 # Import knowledge graph modules
@@ -118,7 +121,7 @@ class Crawl4AIContext:
     """Context for the Crawl4AI MCP server."""
     crawler: AsyncWebCrawler
     supabase_client: Client
-    reranking_model: Optional[CrossEncoder] = None
+    reranking_enabled: bool = False
     knowledge_validator: Optional[Any] = None  # KnowledgeGraphValidator when available
     repo_extractor: Optional[Any] = None       # DirectNeo4jExtractor when available
 
@@ -146,14 +149,13 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
     # Initialize Supabase client
     supabase_client = get_supabase_client()
     
-    # Initialize cross-encoder model for reranking if enabled
-    reranking_model = None
+    # Initialize reranking settings (Jina API)
+    reranking_enabled = False
     if os.getenv("USE_RERANKING", "false") == "true":
-        try:
-            reranking_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        except Exception as e:
-            print(f"Failed to load reranking model: {e}")
-            reranking_model = None
+        if os.getenv("JINA_API_KEY"):
+            reranking_enabled = True
+        else:
+            print("USE_RERANKING=true but JINA_API_KEY is missing. Disable reranking or set the API key.")
     
     # Initialize Neo4j components if configured and enabled
     knowledge_validator = None
@@ -194,7 +196,7 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
         yield Crawl4AIContext(
             crawler=crawler,
             supabase_client=supabase_client,
-            reranking_model=reranking_model,
+            reranking_enabled=reranking_enabled,
             knowledge_validator=knowledge_validator,
             repo_extractor=repo_extractor
         )
@@ -223,39 +225,25 @@ mcp = FastMCP(
     port=os.getenv("PORT", "8051")
 )
 
-def rerank_results(model: CrossEncoder, query: str, results: List[Dict[str, Any]], content_key: str = "content") -> List[Dict[str, Any]]:
+def rerank_results(query: str, results: List[Dict[str, Any]], content_key: str = "content") -> List[Dict[str, Any]]:
     """
-    Rerank search results using a cross-encoder model.
-    
-    Args:
-        model: The cross-encoder model to use for reranking
-        query: The search query
-        results: List of search results
-        content_key: The key in each result dict that contains the text content
-        
-    Returns:
-        Reranked list of results
+    Rerank search results using Jina's hosted reranker.
     """
-    if not model or not results:
+    if not results:
         return results
     
     try:
-        # Extract content from results
-        texts = [result.get(content_key, "") for result in results]
+        documents = [result.get(content_key, "") or "" for result in results]
+        rerank_data = jina_rerank_documents(query, documents, top_n=len(documents))
+        if not rerank_data:
+            return results
         
-        # Create pairs of [query, document] for the cross-encoder
-        pairs = [[query, text] for text in texts]
+        score_map = {item.get("index"): item.get("score", 0.0) for item in rerank_data if "index" in item}
+        for idx, result in enumerate(results):
+            if idx in score_map:
+                result["rerank_score"] = float(score_map[idx])
         
-        # Get relevance scores from the cross-encoder
-        scores = model.predict(pairs)
-        
-        # Add scores to results and sort by score (descending)
-        for i, result in enumerate(results):
-            result["rerank_score"] = float(scores[i])
-        
-        # Sort by rerank score
         reranked = sorted(results, key=lambda x: x.get("rerank_score", 0), reverse=True)
-        
         return reranked
     except Exception as e:
         print(f"Error during reranking: {e}")
@@ -384,6 +372,73 @@ def process_code_example(args):
     """
     code, context_before, context_after = args
     return generate_code_example_summary(code, context_before, context_after)
+
+
+SUPPORTED_LOCAL_EXTENSIONS = {".md", ".markdown", ".txt", ".rst", ".html", ".pdf"}
+
+
+def parse_file_paths_input(file_paths: str) -> List[str]:
+    """
+    Parse a string input representing one or more file paths.
+    """
+    if not file_paths:
+        return []
+    
+    cleaned_paths = []
+    try:
+        parsed = json.loads(file_paths)
+        if isinstance(parsed, str):
+            cleaned_paths.append(parsed)
+        elif isinstance(parsed, list):
+            cleaned_paths.extend([str(item) for item in parsed])
+    except json.JSONDecodeError:
+        # Fallback to splitting by newline or comma
+        for part in re.split(r'[\n,]+', file_paths):
+            part = part.strip()
+            if part:
+                cleaned_paths.append(part)
+    
+    return cleaned_paths
+
+
+def collect_local_files(raw_paths: List[str], recursive: bool = False) -> List[Path]:
+    """
+    Expand the provided paths (files, directories, or globs) into concrete files.
+    """
+    collected: List[Path] = []
+    seen = set()
+    
+    for raw in raw_paths:
+        if not raw:
+            continue
+        has_wildcard = any(char in raw for char in ("*", "?", "[", "]"))
+        candidates = []
+        if has_wildcard:
+            candidates = [Path(p).expanduser() for p in glob.glob(raw, recursive=recursive)]
+        else:
+            candidates = [Path(raw).expanduser()]
+        
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            
+            if candidate.is_file():
+                if candidate.suffix.lower() in SUPPORTED_LOCAL_EXTENSIONS or not candidate.suffix:
+                    resolved = candidate.resolve()
+                    if resolved not in seen:
+                        collected.append(resolved)
+                        seen.add(resolved)
+            elif candidate.is_dir():
+                iterator = candidate.rglob("*") if recursive else candidate.glob("*")
+                for child in iterator:
+                    if child.is_file():
+                        suffix = child.suffix.lower()
+                        if suffix in SUPPORTED_LOCAL_EXTENSIONS or not suffix:
+                            resolved_child = child.resolve()
+                            if resolved_child not in seen:
+                                collected.append(resolved_child)
+                                seen.add(resolved_child)
+    return collected
 
 @mcp.tool()
 async def crawl_single_page(ctx: Context, url: str) -> str:
@@ -524,6 +579,156 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
             "url": url,
             "error": str(e)
         }, indent=2)
+
+
+@mcp.tool()
+async def ingest_local_files(
+    ctx: Context,
+    file_paths: str,
+    source_id: Optional[str] = None,
+    recursive: bool = False
+) -> str:
+    """
+    Ingest one or more local files (Markdown, text, PDF) into Supabase.
+    
+    Args:
+        ctx: MCP context
+        file_paths: JSON array, newline, or comma-separated file paths/globs/directories
+        source_id: Optional source identifier to use for all files (defaults to file stem)
+        recursive: Whether to scan directories/globs recursively
+    """
+    supabase_client = ctx.request_context.lifespan_context.supabase_client
+    parsed_paths = parse_file_paths_input(file_paths)
+    if not parsed_paths:
+        return json.dumps({
+            "success": False,
+            "error": "No file paths provided. Pass a JSON array, newline, or comma-separated paths."
+        }, indent=2)
+    
+    files = collect_local_files(parsed_paths, recursive=recursive)
+    if not files:
+        return json.dumps({
+            "success": False,
+            "error": "No matching files were found for the provided paths."
+        }, indent=2)
+    
+    ingest_time = datetime.utcnow().isoformat()
+    enable_code_examples = os.getenv("USE_AGENTIC_RAG", "false") == "true"
+    
+    summaries = []
+    errors = []
+    total_chunks = 0
+    total_files = 0
+    
+    for file_path in files:
+        try:
+            content = load_local_document(str(file_path))
+        except Exception as e:
+            errors.append(f"{file_path}: {e}")
+            continue
+        
+        if not content or not content.strip():
+            errors.append(f"{file_path}: File is empty after extraction.")
+            continue
+        
+        url = f"file://{file_path.as_posix()}"
+        derived_source = source_id or file_path.stem
+        chunks = smart_chunk_markdown(content)
+        
+        if not chunks:
+            errors.append(f"{file_path}: No chunks were produced (file may be too small).")
+            continue
+        
+        urls = []
+        chunk_numbers = []
+        contents = []
+        metadatas = []
+        total_word_count = 0
+        
+        for idx, chunk in enumerate(chunks):
+            urls.append(url)
+            chunk_numbers.append(idx)
+            contents.append(chunk)
+            meta = extract_section_info(chunk)
+            meta["chunk_index"] = idx
+            meta["file_path"] = str(file_path)
+            meta["source"] = derived_source
+            meta["ingest_time"] = ingest_time
+            metadatas.append(meta)
+            total_word_count += meta.get("word_count", 0)
+        
+        url_to_full_document = {url: content}
+        try:
+            source_summary = extract_source_summary(derived_source, content[:5000])
+            update_source_info(supabase_client, derived_source, source_summary, total_word_count)
+            add_documents_to_supabase(
+                supabase_client,
+                urls,
+                chunk_numbers,
+                contents,
+                metadatas,
+                url_to_full_document
+            )
+        except Exception as e:
+            errors.append(f"{file_path}: Failed to insert chunks ({e})")
+            continue
+        
+        code_examples_stored = 0
+        if enable_code_examples:
+            code_blocks = extract_code_blocks(content)
+            if code_blocks:
+                code_urls = []
+                code_chunk_numbers = []
+                code_examples = []
+                code_summaries = []
+                code_metadatas = []
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    summary_args = [(block['code'], block['context_before'], block['context_after'])
+                                    for block in code_blocks]
+                    summaries_list = list(executor.map(process_code_example, summary_args))
+                
+                for idx, (block, summary) in enumerate(zip(code_blocks, summaries_list)):
+                    code_urls.append(url)
+                    code_chunk_numbers.append(idx)
+                    code_examples.append(block['code'])
+                    code_summaries.append(summary)
+                    code_metadatas.append({
+                        "chunk_index": idx,
+                        "file_path": str(file_path),
+                        "source": derived_source,
+                        "char_count": len(block['code']),
+                        "word_count": len(block['code'].split())
+                    })
+                
+                add_code_examples_to_supabase(
+                    supabase_client,
+                    code_urls,
+                    code_chunk_numbers,
+                    code_examples,
+                    code_summaries,
+                    code_metadatas
+                )
+                code_examples_stored = len(code_examples)
+        
+        summaries.append({
+            "file": str(file_path),
+            "url": url,
+            "chunks_stored": len(chunks),
+            "code_examples_stored": code_examples_stored,
+            "source_id": derived_source,
+            "word_count": total_word_count
+        })
+        total_chunks += len(chunks)
+        total_files += 1
+    
+    return json.dumps({
+        "success": total_files > 0,
+        "files_processed": total_files,
+        "chunks_stored": total_chunks,
+        "results": summaries,
+        "errors": errors
+    }, indent=2)
 
 @mcp.tool()
 async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concurrent: int = 10, chunk_size: int = 5000) -> str:
@@ -878,8 +1083,9 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
         
         # Apply reranking if enabled
         use_reranking = os.getenv("USE_RERANKING", "false") == "true"
-        if use_reranking and ctx.request_context.lifespan_context.reranking_model:
-            results = rerank_results(ctx.request_context.lifespan_context.reranking_model, query, results, content_key="content")
+        reranking_available = ctx.request_context.lifespan_context.reranking_enabled
+        if use_reranking and reranking_available:
+            results = rerank_results(query, results, content_key="content")
         
         # Format the results
         formatted_results = []
@@ -900,7 +1106,7 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
             "query": query,
             "source_filter": source,
             "search_mode": "hybrid" if use_hybrid_search else "vector",
-            "reranking_applied": use_reranking and ctx.request_context.lifespan_context.reranking_model is not None,
+            "reranking_applied": use_reranking and reranking_available,
             "results": formatted_results,
             "count": len(formatted_results)
         }, indent=2)
@@ -1033,8 +1239,9 @@ async def search_code_examples(ctx: Context, query: str, source_id: str = None, 
         
         # Apply reranking if enabled
         use_reranking = os.getenv("USE_RERANKING", "false") == "true"
-        if use_reranking and ctx.request_context.lifespan_context.reranking_model:
-            results = rerank_results(ctx.request_context.lifespan_context.reranking_model, query, results, content_key="content")
+        reranking_available = ctx.request_context.lifespan_context.reranking_enabled
+        if use_reranking and reranking_available:
+            results = rerank_results(query, results, content_key="content")
         
         # Format the results
         formatted_results = []
@@ -1057,7 +1264,7 @@ async def search_code_examples(ctx: Context, query: str, source_id: str = None, 
             "query": query,
             "source_filter": source_id,
             "search_mode": "hybrid" if use_hybrid_search else "vector",
-            "reranking_applied": use_reranking and ctx.request_context.lifespan_context.reranking_model is not None,
+            "reranking_applied": use_reranking and reranking_available,
             "results": formatted_results,
             "count": len(formatted_results)
         }, indent=2)

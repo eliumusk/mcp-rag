@@ -58,23 +58,39 @@ The server provides essential web crawling and search tools:
 2. **`smart_crawl_url`**: Intelligently crawl a full website based on the type of URL provided (sitemap, llms-full.txt, or a regular webpage that needs to be crawled recursively)
 3. **`get_available_sources`**: Get a list of all available sources (domains) in the database
 4. **`perform_rag_query`**: Search for relevant content using semantic search with optional source filtering
+5. **`ingest_local_files`**: Read Markdown/text/PDF files directly from disk (or glob patterns/directories), chunk them, and push into Supabase without hosting them anywhere
 
 ### Conditional Tools
 
-5. **`search_code_examples`** (requires `USE_AGENTIC_RAG=true`): Search specifically for code examples and their summaries from crawled documentation. This tool provides targeted code snippet retrieval for AI coding assistants.
+6. **`search_code_examples`** (requires `USE_AGENTIC_RAG=true`): Search specifically for code examples and their summaries from crawled documentation. This tool provides targeted code snippet retrieval for AI coding assistants.
 
 ### Knowledge Graph Tools (requires `USE_KNOWLEDGE_GRAPH=true`, see below)
 
-6. **`parse_github_repository`**: Parse a GitHub repository into a Neo4j knowledge graph, extracting classes, methods, functions, and their relationships for hallucination detection
-7. **`check_ai_script_hallucinations`**: Analyze Python scripts for AI hallucinations by validating imports, method calls, and class usage against the knowledge graph
-8. **`query_knowledge_graph`**: Explore and query the Neo4j knowledge graph with commands like `repos`, `classes`, `methods`, and custom Cypher queries
+7. **`parse_github_repository`**: Parse a GitHub repository into a Neo4j knowledge graph, extracting classes, methods, functions, and their relationships for hallucination detection
+8. **`check_ai_script_hallucinations`**: Analyze Python scripts for AI hallucinations by validating imports, method calls, and class usage against the knowledge graph
+9. **`query_knowledge_graph`**: Explore and query the Neo4j knowledge graph with commands like `repos`, `classes`, `methods`, and custom Cypher queries
+
+### Local File Ingestion
+
+Use `ingest_local_files` when you already have Markdown/text/PDF documents locally and want to skip crawling:
+
+```json
+{
+  "tool": "ingest_local_files",
+  "file_paths": "[\"docs/intro.md\", \"notes/**/*.md\", \"spec.pdf\"]",
+  "recursive": true
+}
+```
+
+The tool expands globs/directories, reads text (PDF support requires `pip install pypdf`), chunks with the same logic as the crawler, and pushes results—including optional code examples—into Supabase.
 
 ## Prerequisites
 
 - [Docker/Docker Desktop](https://www.docker.com/products/docker-desktop/) if running the MCP server as a container (recommended)
 - [Python 3.12+](https://www.python.org/downloads/) if running the MCP server directly through uv
 - [Supabase](https://supabase.com/) (database for RAG)
-- [OpenAI API key](https://platform.openai.com/api-keys) (for generating embeddings)
+- [Jina AI API key](https://jina.ai/embeddings/) (for embeddings and optional reranking)
+- Any OpenAI-compatible LLM endpoint (e.g., OpenRouter, Groq, Together); configure its API key/base via `LLM_API_KEY` / `LLM_API_BASE`
 - [Neo4j](https://neo4j.com/) (optional, for knowledge graph functionality) - see [Knowledge Graph Setup](#knowledge-graph-setup) section
 
 ## Installation
@@ -185,11 +201,21 @@ HOST=0.0.0.0
 PORT=8051
 TRANSPORT=sse
 
-# OpenAI API Configuration
-OPENAI_API_KEY=your_openai_api_key
+# Embedding Configuration (Jina)
+JINA_API_KEY=your_jina_api_key
+JINA_API_URL=https://api.jina.ai/v1/embeddings
+EMBEDDING_MODEL=jina-embeddings-v3
+JINA_EMBEDDING_TASK=text-matching
+EMBEDDING_DIM=1024
 
-# LLM for summaries and contextual embeddings
-MODEL_CHOICE=gpt-4.1-nano
+# Optional Jina Rerank Configuration
+JINA_RERANK_URL=https://api.jina.ai/v1/rerank
+JINA_RERANK_MODEL=jina-reranker-v3
+
+# LLM for summaries/contextual embeddings (any OpenAI-compatible endpoint)
+MODEL_CHOICE=openrouter/anthropic/claude-3.5-haiku
+LLM_API_KEY=your_llm_key
+LLM_API_BASE=https://openrouter.ai/api/v1
 
 # RAG Strategies (set to "true" or "false", default to "false")
 USE_CONTEXTUAL_EMBEDDINGS=false
@@ -235,11 +261,11 @@ Enables specialized code example extraction and storage. When crawling documenta
 - **Benefits**: Provides a dedicated `search_code_examples` tool that AI agents can use to find specific code implementations.
 
 #### 4. **USE_RERANKING**
-Applies cross-encoder reranking to search results after initial retrieval. Uses a lightweight cross-encoder model (`cross-encoder/ms-marco-MiniLM-L-6-v2`) to score each result against the original query, then reorders results by relevance.
+Calls Jina's hosted reranker API to rescore results after initial retrieval. This yields better ranking without hosting a local cross-encoder.
 
 - **When to use**: Enable this when search precision is critical and you need the most relevant results at the top. Particularly useful for complex queries where semantic similarity alone might not capture query intent.
-- **Trade-offs**: Adds ~100-200ms to search queries depending on result count, but significantly improves result ordering.
-- **Cost**: No additional API costs - uses a local model that runs on CPU.
+- **Trade-offs**: Adds one external API call (~100-200ms depending on document count) but significantly improves ordering.
+- **Cost**: Pay-per-use on the Jina API (same key as embeddings). No local GPU/CPU load.
 - **Benefits**: Better result relevance, especially for complex queries. Works with both regular RAG search and code example search.
 
 #### 5. **USE_KNOWLEDGE_GRAPH**
@@ -363,7 +389,9 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
       "args": ["path/to/crawl4ai-mcp/src/crawl4ai_mcp.py"],
       "env": {
         "TRANSPORT": "stdio",
-        "OPENAI_API_KEY": "your_openai_api_key",
+        "JINA_API_KEY": "your_jina_api_key",
+        "LLM_API_KEY": "your_llm_api_key",
+        "LLM_API_BASE": "https://openrouter.ai/api/v1",
         "SUPABASE_URL": "your_supabase_url",
         "SUPABASE_SERVICE_KEY": "your_supabase_service_key",
         "USE_KNOWLEDGE_GRAPH": "false",
@@ -385,7 +413,9 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
       "command": "docker",
       "args": ["run", "--rm", "-i", 
                "-e", "TRANSPORT", 
-               "-e", "OPENAI_API_KEY", 
+               "-e", "JINA_API_KEY", 
+               "-e", "LLM_API_KEY", 
+               "-e", "LLM_API_BASE",
                "-e", "SUPABASE_URL", 
                "-e", "SUPABASE_SERVICE_KEY",
                "-e", "USE_KNOWLEDGE_GRAPH",
@@ -395,7 +425,9 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
                "mcp/crawl4ai"],
       "env": {
         "TRANSPORT": "stdio",
-        "OPENAI_API_KEY": "your_openai_api_key",
+        "JINA_API_KEY": "your_jina_api_key",
+        "LLM_API_KEY": "your_llm_api_key",
+        "LLM_API_BASE": "https://openrouter.ai/api/v1",
         "SUPABASE_URL": "your_supabase_url",
         "SUPABASE_SERVICE_KEY": "your_supabase_service_key",
         "USE_KNOWLEDGE_GRAPH": "false",
