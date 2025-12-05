@@ -1,5 +1,5 @@
 [project]
-name = "crawl4ai-mcp"
+name = "rag-mcp"
 version = "0.1.0"
 description = "MCP server for integrating web crawling and RAG into AI agents and AI coding assistants"
 readme = "README.md"
@@ -13,3 +13,6 @@ dependencies = [
     "sentence-transformers>=4.1.0",
     "neo4j>=5.28.1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
