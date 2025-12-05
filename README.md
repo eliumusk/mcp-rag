@@ -173,6 +173,17 @@ EMBEDDING_CACHE_TTL_SECONDS=604800  # 7 days
 
 When you upgrade embedding models, bump `EMBEDDING_VERSION` to force misses and repopulate the cache incrementally.
 
+### Smart Crawl Configuration
+
+`smart_crawl_url` now relies on Jina 的 “Links/Buttons” 摘要来发现可遍历的内部链接。你可以通过环境变量控制最大遍历范围：
+
+```
+SMART_CRAWL_MAX_PAGES=30            # 单次深度抓取的最大页面数
+SMART_CRAWL_MAX_LINKS_PER_PAGE=20   # 每个页面最多取多少个 Links/Buttons 链接
+```
+
+抓取流程会把链接当成 BFS 队列（按域名去重），Jina 代理失败时自动退回直接请求，但此时无法获得链接列表，因此只会抓取起始页面。
+
 ## Knowledge Graph Setup (Optional)
 
 To enable AI hallucination detection and repository analysis features, you need to set up Neo4j.

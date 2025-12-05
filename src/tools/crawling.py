@@ -1,9 +1,10 @@
 """Crawl-related MCP tools implemented via Jina's lightweight fetch proxy."""
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Tuple
 
 import asyncio
 import concurrent.futures
+from collections import deque
 import os
 import re
 from urllib.parse import urljoin, urlparse, urldefrag
@@ -31,6 +32,8 @@ HTML_USER_AGENT = (
     os.getenv("CRAWLER_USER_AGENT")
     or "Mozilla/5.0 (compatible; Crawl4AI-RAG/1.0; +https://github.com/eliumusk/mcp-crawl4ai-rag)"
 )
+SMART_CRAWL_MAX_PAGES = int(os.getenv("SMART_CRAWL_MAX_PAGES", "30"))
+SMART_CRAWL_MAX_LINKS_PER_PAGE = int(os.getenv("SMART_CRAWL_MAX_LINKS_PER_PAGE", "20"))
 
 
 def is_sitemap(url: str) -> bool:
@@ -60,11 +63,16 @@ def _build_proxy_url(target_url: str) -> str:
     return f"{base}/{target_url}"
 
 
-def fetch_with_jina(target_url: str) -> str:
+LINKS_MARKER = "Links/Buttons:"
+
+def fetch_with_jina(target_url: str, *, include_links: bool = False) -> str:
     proxy_url = _build_proxy_url(target_url)
     headers = {"User-Agent": HTML_USER_AGENT}
     if JINA_API_KEY:
         headers["Authorization"] = f"Bearer {JINA_API_KEY}"
+    if include_links:
+        headers["X-With-Links-Summary"] = "true"
+        headers["X-Retain-Images"] = "none"
 
     resp = requests.get(proxy_url, headers=headers, timeout=REQUEST_TIMEOUT)
     if resp.status_code != 200:
@@ -73,33 +81,68 @@ def fetch_with_jina(target_url: str) -> str:
     return resp.text
 
 
-async def fetch_markdown(target_url: str) -> str:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, fetch_with_jina, target_url)
-
-
-def fetch_html_for_links(target_url: str) -> str:
+def fetch_direct_content(target_url: str) -> str:
     resp = requests.get(target_url, headers={"User-Agent": HTML_USER_AGENT}, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.text
 
 
-def extract_internal_links(base_url: str, html: str) -> Set[str]:
-    links = set()
-    base = urlparse(base_url)
-    for href in re.findall(r'href=["\'](.*?)["\']', html, flags=re.IGNORECASE):
-        if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
+def _parse_links_summary(markdown_text: str) -> Tuple[str, List[str]]:
+    marker_index = markdown_text.rfind(f"\n{LINKS_MARKER}")
+    if marker_index == -1:
+        return markdown_text, []
+
+    body = markdown_text[:marker_index].rstrip()
+    links_block = markdown_text[marker_index + len(LINKS_MARKER) + 1 :].strip()
+    urls: List[str] = []
+
+    link_pattern = re.compile(r"\((https?://[^)]+)\)")
+    bare_pattern = re.compile(r"(https?://\S+)")
+
+    for line in links_block.splitlines():
+        line = line.strip()
+        if not line.startswith("-"):
             continue
-        absolute = urljoin(base_url, href)
-        parsed = urlparse(absolute)
-        if parsed.scheme.startswith("http") and parsed.netloc == base.netloc:
-            links.add(absolute)
-    return links
+        match = link_pattern.search(line)
+        if match:
+            urls.append(match.group(1))
+            continue
+        bare_match = bare_pattern.search(line)
+        if bare_match:
+            urls.append(bare_match.group(1).rstrip(")"))
+
+    seen = set()
+    ordered_urls = []
+    for url in urls:
+        if url not in seen:
+            ordered_urls.append(url)
+            seen.add(url)
+
+    return body, ordered_urls
+
+
+def fetch_content_with_fallback(target_url: str, include_links: bool = False) -> Tuple[str, List[str]]:
+    try:
+        content = fetch_with_jina(target_url, include_links=include_links)
+    except Exception as exc:
+        log_warning("crawling", "proxy_fetch_failed", url=target_url, error=str(exc))
+        direct = fetch_direct_content(target_url)
+        return direct, []
+
+    if include_links:
+        body, urls = _parse_links_summary(content)
+        return body, urls
+    return content, []
+
+
+async def fetch_markdown(target_url: str, include_links: bool = False) -> Tuple[str, List[str]]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fetch_content_with_fallback, target_url, include_links)
 
 
 async def crawl_markdown_file(url: str) -> List[Dict[str, Any]]:
     try:
-        markdown = await fetch_markdown(url)
+        markdown, _ = await fetch_markdown(url)
         return [{"url": url, "markdown": markdown}]
     except Exception as exc:
         log_error("crawling", "markdown_fetch_failed", url=url, error=str(exc))
@@ -113,7 +156,7 @@ async def crawl_batch(urls: List[str], max_concurrent: int = 10) -> List[Dict[st
     async def fetch_one(target_url: str) -> None:
         async with semaphore:
             try:
-                markdown = await fetch_markdown(target_url)
+                markdown, _ = await fetch_markdown(target_url)
                 if markdown:
                     results.append({"url": target_url, "markdown": markdown})
             except Exception as exc:
@@ -124,30 +167,49 @@ async def crawl_batch(urls: List[str], max_concurrent: int = 10) -> List[Dict[st
 
 
 async def crawl_recursive_internal_links(
-    start_urls: List[str], max_depth: int = 3, max_concurrent: int = 10
+    start_urls: List[str],
+    max_depth: int = 3,
+    max_concurrent: int = 10,
 ) -> List[Dict[str, Any]]:
-    visited = set()
-    current_urls = {urldefrag(url)[0] for url in start_urls}
+    queue: deque[Tuple[str, int]] = deque()
+    visited: set[str] = set()
     results: List[Dict[str, Any]] = []
 
-    for _ in range(max_depth):
-        urls_to_fetch = [url for url in current_urls if url not in visited]
-        if not urls_to_fetch:
-            break
+    for url in start_urls:
+        normalized = urldefrag(url)[0]
+        queue.append((normalized, 0))
 
-        batch_results = await crawl_batch(urls_to_fetch, max_concurrent=max_concurrent)
-        results.extend(batch_results)
-        new_urls: Set[str] = set()
+    while queue and len(results) < SMART_CRAWL_MAX_PAGES:
+        url, depth = queue.popleft()
+        if url in visited:
+            continue
+        visited.add(url)
 
-        for url in urls_to_fetch:
-            visited.add(url)
-            try:
-                html = fetch_html_for_links(url)
-                new_urls |= extract_internal_links(url, html)
-            except Exception as exc:
-                log_error("crawling", "link_extraction_failed", url=url, error=str(exc))
+        try:
+            markdown, discovered_links = await fetch_markdown(url, include_links=True)
+        except Exception as exc:
+            log_error("crawling", "batch_fetch_failed", url=url, error=str(exc))
+            continue
 
-        current_urls = new_urls
+        results.append({"url": url, "markdown": markdown})
+
+        if depth >= max_depth:
+            continue
+
+        next_links = 0
+        for link in discovered_links:
+            if next_links >= SMART_CRAWL_MAX_LINKS_PER_PAGE:
+                break
+            if not link:
+                continue
+            parsed = urlparse(link)
+            if not parsed.scheme:
+                link = urljoin(url, link)
+            normalized = urldefrag(link)[0]
+            if not normalized or normalized in visited:
+                continue
+            queue.append((normalized, depth + 1))
+            next_links += 1
 
     return results
 
@@ -158,7 +220,7 @@ async def crawl_single_page(ctx: Context, url: str, tenant_id: str | None = None
         supabase_client = ctx.request_context.lifespan_context.supabase_client
         default_tenant = ctx.request_context.lifespan_context.tenant_id
         tenant = tenant_id or default_tenant
-        markdown = await fetch_markdown(url)
+        markdown, _ = await fetch_markdown(url)
         if not markdown:
             return error_response("CRAWL_NO_CONTENT", "No content returned from target", details={"url": url})
 
