@@ -148,6 +148,31 @@ Before running the server, you need to set up the database with the pgvector ext
 
 3. Run the query to create the necessary tables and functions
 
+### Embedding Cache & Incremental Updates
+
+The default schema now adds:
+
+- `content_hash`, `embedding_model`, and `embedding_cached_at` on both `crawled_pages` and `code_examples`
+- A dedicated `embedding_cache` table keyed by `(tenant_id, content_hash, model_name)` with a `needs_refresh` flag for asynchronous refresh workflows
+
+The crawler/ingestion tools will:
+
+1. Hash every chunk (or code example) before embedding.
+2. Look up reusable embeddings in `embedding_cache`. Cache hits skip the embedding API call entirely.
+3. Insert new embeddings back into the cache, namespaced by tenant and embedding version/model.
+4. Mark stale cache rows (`refreshed_at` older than `EMBEDDING_CACHE_TTL_SECONDS`) for asynchronous refresh by setting `needs_refresh=true`.
+
+Configure cache behavior via the new environment variables:
+
+```
+# Embedding cache
+EMBEDDING_VERSION=         # Optional friendly name for the embedding configuration (defaults to EMBEDDING_MODEL)
+EMBEDDING_CACHE_ENABLED=true
+EMBEDDING_CACHE_TTL_SECONDS=604800  # 7 days
+```
+
+When you upgrade embedding models, bump `EMBEDDING_VERSION` to force misses and repopulate the cache incrementally.
+
 ## Knowledge Graph Setup (Optional)
 
 To enable AI hallucination detection and repository analysis features, you need to set up Neo4j.

@@ -5,12 +5,18 @@ import os
 import concurrent.futures
 from typing import List, Dict, Any, Optional, Tuple
 import json
-from supabase import create_client, Client
+try:
+    from supabase import create_client, Client
+except ImportError:  # pragma: no cover - allows tests to run without Supabase installed
+    create_client = None
+    Client = Any  # type: ignore
 from urllib.parse import urlparse
 from pathlib import Path
 import requests
 import re
 import time
+import hashlib
+from datetime import datetime, timezone, timedelta
 
 JINA_API_URL = os.getenv("JINA_API_URL", "https://api.jina.ai/v1/embeddings")
 JINA_API_KEY = os.getenv("JINA_API_KEY")
@@ -22,6 +28,170 @@ DEFAULT_EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
 
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_API_BASE = os.getenv("LLM_API_BASE")
+
+EMBEDDING_VERSION = os.getenv("EMBEDDING_VERSION")
+EMBEDDING_IDENTIFIER = EMBEDDING_VERSION or EMBEDDING_MODEL
+EMBEDDING_CACHE_ENABLED = os.getenv("EMBEDDING_CACHE_ENABLED", "true") == "true"
+EMBEDDING_CACHE_TTL_SECONDS = int(os.getenv("EMBEDDING_CACHE_TTL_SECONDS", str(7 * 24 * 60 * 60)))
+
+
+def utcnow_iso() -> str:
+    """Return the current UTC time in ISO format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def compute_content_hash(text: str) -> str:
+    """Create a stable SHA256 hash for caching embeddings."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _is_cache_entry_stale(refreshed_at: Optional[str]) -> bool:
+    if EMBEDDING_CACHE_TTL_SECONDS <= 0:
+        return False
+    timestamp = _parse_iso_timestamp(refreshed_at)
+    if not timestamp:
+        return True
+    age = datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)
+    return age > timedelta(seconds=EMBEDDING_CACHE_TTL_SECONDS)
+
+
+def fetch_embedding_cache(
+    client: Client,
+    tenant_id: str,
+    content_hashes: List[str],
+    model_name: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Fetch cached embeddings from Supabase."""
+    if not EMBEDDING_CACHE_ENABLED or not content_hashes:
+        return {}
+    unique_hashes = list({h for h in content_hashes if h})
+    if not unique_hashes:
+        return {}
+    try:
+        response = (
+            client.table("embedding_cache")
+            .select("content_hash, embedding, refreshed_at, needs_refresh")
+            .eq("tenant_id", tenant_id)
+            .eq("model_name", model_name)
+            .in_("content_hash", unique_hashes)
+            .execute()
+        )
+        rows = response.data or []
+        return {row["content_hash"]: row for row in rows}
+    except Exception as exc:
+        print(f"Error fetching embedding cache: {exc}")
+        return {}
+
+
+def store_embeddings_in_cache(
+    client: Client,
+    records: List[Dict[str, Any]],
+) -> None:
+    """Persist new embeddings to the cache table."""
+    if not EMBEDDING_CACHE_ENABLED or not records:
+        return
+    try:
+        client.table("embedding_cache").upsert(records).execute()
+    except Exception as exc:
+        print(f"Error storing embeddings in cache: {exc}")
+
+
+def flag_cache_entry_for_refresh(
+    client: Client,
+    tenant_id: str,
+    content_hash: str,
+    model_name: str,
+) -> None:
+    """Mark cache entries as needing refresh for asynchronous processing."""
+    if not EMBEDDING_CACHE_ENABLED:
+        return
+    try:
+        (
+            client.table("embedding_cache")
+            .update({"needs_refresh": True})
+            .eq("tenant_id", tenant_id)
+            .eq("content_hash", content_hash)
+            .eq("model_name", model_name)
+            .execute()
+        )
+    except Exception as exc:
+        print(f"Error flagging cache entry for refresh: {exc}")
+
+
+def get_embeddings_with_cache(
+    client: Client,
+    texts: List[str],
+    content_hashes: List[str],
+    tenant_id: str,
+    model_name: str,
+    cache_context: str,
+) -> List[List[float]]:
+    """
+    Return embeddings for texts, preferring cached values when available.
+    """
+    if not texts:
+        return []
+
+    if len(texts) != len(content_hashes):
+        raise ValueError("texts and content_hashes must be the same length")
+
+    if not EMBEDDING_CACHE_ENABLED:
+        return create_embeddings_batch(texts)
+
+    cache_map = fetch_embedding_cache(client, tenant_id, content_hashes, model_name)
+    embeddings: List[Optional[List[float]]] = [None] * len(texts)
+    missing_texts: List[str] = []
+    missing_indices: List[int] = []
+
+    for idx, content_hash in enumerate(content_hashes):
+        cache_entry = cache_map.get(content_hash)
+        if cache_entry and cache_entry.get("embedding"):
+            if _is_cache_entry_stale(cache_entry.get("refreshed_at")) and not cache_entry.get("needs_refresh"):
+                flag_cache_entry_for_refresh(client, tenant_id, content_hash, model_name)
+            embeddings[idx] = cache_entry["embedding"]
+        else:
+            missing_texts.append(texts[idx])
+            missing_indices.append(idx)
+
+    hit_count = len(texts) - len(missing_texts)
+    print(
+        f"[EmbeddingCache] context={cache_context} tenant={tenant_id} model={model_name} "
+        f"hits={hit_count} misses={len(missing_texts)}",
+        flush=True,
+    )
+
+    if missing_texts:
+        fresh_embeddings = create_embeddings_batch(missing_texts)
+        now_iso = utcnow_iso()
+        cache_records: List[Dict[str, Any]] = []
+        for index, embedding in zip(missing_indices, fresh_embeddings):
+            embeddings[index] = embedding
+            cache_records.append(
+                {
+                    "tenant_id": tenant_id,
+                    "content_hash": content_hashes[index],
+                    "model_name": model_name,
+                    "embedding": embedding,
+                    "refreshed_at": now_iso,
+                    "needs_refresh": False,
+                    "metadata": {"context": cache_context},
+                }
+            )
+        store_embeddings_in_cache(client, cache_records)
+
+    # Replace any remaining None entries with zero vectors to avoid downstream errors
+    return [embedding if embedding is not None else [0.0] * DEFAULT_EMBEDDING_DIM for embedding in embeddings]
 
 def get_supabase_client() -> Client:
     """
@@ -35,6 +205,9 @@ def get_supabase_client() -> Client:
     
     if not url or not key:
         raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables")
+
+    if create_client is None:
+        raise ImportError("supabase-py is required to create a Supabase client. Install the dependencies first.")
     
     return create_client(url, key)
 
@@ -422,8 +595,16 @@ def add_documents_to_supabase(
             # If not using contextual embeddings, use original contents
             contextual_contents = batch_contents
         
-        # Create embeddings for the entire batch at once
-        batch_embeddings = create_embeddings_batch(contextual_contents)
+        # Create or reuse embeddings using the cache
+        batch_hashes = [compute_content_hash(text) for text in contextual_contents]
+        batch_embeddings = get_embeddings_with_cache(
+            client=client,
+            texts=contextual_contents,
+            content_hashes=batch_hashes,
+            tenant_id=tenant,
+            model_name=EMBEDDING_IDENTIFIER,
+            cache_context="documents",
+        )
         
         batch_data = []
         for j in range(len(contextual_contents)):
@@ -446,6 +627,9 @@ def add_documents_to_supabase(
                 },
                 "source_id": source_id,  # Add source_id field
                 "embedding": batch_embeddings[j],  # Use embedding from contextual content
+                "content_hash": batch_hashes[j],
+                "embedding_model": EMBEDDING_IDENTIFIER,
+                "embedding_cached_at": utcnow_iso(),
                 "tenant_id": tenant,
             }
             
@@ -702,23 +886,19 @@ def add_code_examples_to_supabase(
             combined_text = f"{code_examples[j]}\n\nSummary: {summaries[j]}"
             batch_texts.append(combined_text)
         
-        # Create embeddings for the batch
-        embeddings = create_embeddings_batch(batch_texts)
-        
-        # Check if embeddings are valid (not all zeros)
-        valid_embeddings = []
-        for embedding in embeddings:
-            if embedding and not all(v == 0.0 for v in embedding):
-                valid_embeddings.append(embedding)
-            else:
-                print(f"Warning: Zero or invalid embedding detected, creating new one...")
-                # Try to create a single embedding as fallback
-                single_embedding = create_embedding(batch_texts[len(valid_embeddings)])
-                valid_embeddings.append(single_embedding)
+        batch_hashes = [compute_content_hash(text) for text in batch_texts]
+        embeddings = get_embeddings_with_cache(
+            client=client,
+            texts=batch_texts,
+            content_hashes=batch_hashes,
+            tenant_id=tenant,
+            model_name=EMBEDDING_IDENTIFIER,
+            cache_context="code_examples",
+        )
         
         # Prepare batch data
         batch_data = []
-        for j, embedding in enumerate(valid_embeddings):
+        for j, embedding in enumerate(embeddings):
             idx = i + j
             
             # Extract source_id from URL
@@ -733,6 +913,9 @@ def add_code_examples_to_supabase(
                 'metadata': metadatas[idx],  # Store as JSON object, not string
                 'source_id': source_id,
                 'embedding': embedding,
+                'content_hash': batch_hashes[j],
+                'embedding_model': EMBEDDING_IDENTIFIER,
+                'embedding_cached_at': utcnow_iso(),
                 'tenant_id': tenant
             })
         

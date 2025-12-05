@@ -29,6 +29,9 @@ create table crawled_pages (
     metadata jsonb not null default '{}'::jsonb,
     source_id text not null,
     embedding vector(1024),  -- Jina embeddings (v3) output 1024 dimensions
+    content_hash text not null,
+    embedding_model text not null default 'jina-embeddings-v3',
+    embedding_cached_at timestamp with time zone default timezone('utc'::text, now()) not null,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     
     -- Add a unique constraint to prevent duplicate chunks for the same URL
@@ -47,6 +50,7 @@ create index idx_crawled_pages_metadata on crawled_pages using gin (metadata);
 -- Create indexes on tenant/source for faster filtering
 create index idx_crawled_pages_tenant on crawled_pages (tenant_id);
 create index idx_crawled_pages_tenant_source on crawled_pages (tenant_id, source_id);
+create index idx_crawled_pages_tenant_hash on crawled_pages (tenant_id, content_hash);
 
 -- Create a function to search for documentation chunks
 create or replace function match_crawled_pages (
@@ -117,6 +121,9 @@ create table code_examples (
     metadata jsonb not null default '{}'::jsonb,
     source_id text not null,
     embedding vector(1024),  -- Jina embeddings (v3) output 1024 dimensions
+    content_hash text not null,
+    embedding_model text not null default 'jina-embeddings-v3',
+    embedding_cached_at timestamp with time zone default timezone('utc'::text, now()) not null,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     
     -- Add a unique constraint to prevent duplicate chunks for the same URL
@@ -135,6 +142,7 @@ create index idx_code_examples_metadata on code_examples using gin (metadata);
 -- Create indexes on tenant/source for faster filtering
 create index idx_code_examples_tenant on code_examples (tenant_id);
 create index idx_code_examples_tenant_source on code_examples (tenant_id, source_id);
+create index idx_code_examples_tenant_hash on code_examples (tenant_id, content_hash);
 
 -- Create a function to search for code examples
 create or replace function match_code_examples (
@@ -182,6 +190,30 @@ alter table code_examples enable row level security;
 -- Create a policy that allows anyone to read code_examples
 create policy "Allow public read access to code_examples"
   on code_examples
+  for select
+  to public
+  using (true);
+
+-- Embedding cache table to support reuse and asynchronous refresh
+create table embedding_cache (
+    id bigserial primary key,
+    tenant_id text not null,
+    content_hash text not null,
+    model_name text not null,
+    embedding vector(1024),
+    refreshed_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    needs_refresh boolean default false,
+    metadata jsonb not null default '{}'::jsonb,
+    unique (tenant_id, content_hash, model_name)
+);
+
+create index idx_embedding_cache_tenant on embedding_cache (tenant_id);
+create index idx_embedding_cache_tenant_hash on embedding_cache (tenant_id, content_hash);
+
+alter table embedding_cache enable row level security;
+
+create policy "Allow public read access to embedding_cache"
+  on embedding_cache
   for select
   to public
   using (true);
