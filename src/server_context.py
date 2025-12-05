@@ -9,7 +9,6 @@ from typing import Any, AsyncIterator, Optional
 import os
 import sys
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from supabase import Client
@@ -46,7 +45,6 @@ def format_neo4j_error(error: Exception) -> str:
 class Crawl4AIContext:
     """Context shared across MCP tools."""
 
-    crawler: AsyncWebCrawler
     supabase_client: Client
     reranking_enabled: bool = False
     knowledge_validator: Optional[Any] = None
@@ -102,24 +100,18 @@ async def _initialize_knowledge_graph_components() -> tuple[Optional[Any], Optio
 async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
     """Manage crawler and database clients across the MCP lifespan."""
 
-    browser_config = BrowserConfig(headless=True, verbose=False)
-    crawler = AsyncWebCrawler(config=browser_config)
-    await crawler.__aenter__()
-
     supabase_client = get_supabase_client()
     reranking_enabled = _should_enable_reranking()
     knowledge_validator, repo_extractor = await _initialize_knowledge_graph_components()
 
     try:
         yield Crawl4AIContext(
-            crawler=crawler,
             supabase_client=supabase_client,
             reranking_enabled=reranking_enabled,
             knowledge_validator=knowledge_validator,
             repo_extractor=repo_extractor,
         )
     finally:
-        await crawler.__aexit__(None, None, None)
         if knowledge_validator:
             try:
                 await knowledge_validator.close()

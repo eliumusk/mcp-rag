@@ -4,7 +4,7 @@
   <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
+A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Jina](https://jina.ai) fetching proxies and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
 
 With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
 
@@ -133,7 +133,6 @@ The tool expands globs/directories, reads text (PDF support requires `pip instal
 4. Install dependencies:
    ```bash
    uv pip install -e .
-   crawl4ai-setup
    ```
 
 5. Create a `.env` file based on the configuration section below
@@ -336,7 +335,7 @@ docker run --env-file .env -p 8051:8051 mcp/crawl4ai-rag
 ### Using Python
 
 ```bash
-uv run src/crawl4ai_mcp.py
+uv run src/rag_mcp.py
 ```
 
 The server will start and listen on the configured host and port.
@@ -386,7 +385,7 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
   "mcpServers": {
     "crawl4ai-rag": {
       "command": "python",
-      "args": ["path/to/crawl4ai-mcp/src/crawl4ai_mcp.py"],
+      "args": ["path/to/crawl4ai-mcp/src/rag_mcp.py"],
       "env": {
         "TRANSPORT": "stdio",
         "JINA_API_KEY": "your_jina_api_key",

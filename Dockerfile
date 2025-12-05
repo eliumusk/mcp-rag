@@ -12,10 +12,9 @@ COPY . .
 
 # Install packages directly to the system (no virtual environment)
 # Combining commands to reduce Docker layers
-RUN uv pip install --system -e . && \
-    crawl4ai-setup
+RUN uv pip install --system -e .
 
 EXPOSE ${PORT}
 
 # Command to run the MCP server
-CMD ["python", "src/crawl4ai_mcp.py"]
+CMD ["python", "src/rag_mcp.py"]

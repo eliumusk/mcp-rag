@@ -2,20 +2,20 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Core MCP source lives in `src/`. `crawl4ai_mcp.py` wires FastMCP tools, async crawlers, Supabase, and optional Neo4j components; `utils.py` centralizes Supabase/RAG helpers shared by the tools.
+- Core MCP source lives in `src/`. `rag_mcp.py` wires FastMCP tools, Jina-based fetchers, Supabase, and optional Neo4j components; `utils.py` centralizes Supabase/RAG helpers shared by the tools.
 - Knowledge-graph utilities (`knowledge_graphs/`) house the Neo4j extractors, script analyzers, and hallucination reporters that are imported dynamically when `USE_KNOWLEDGE_GRAPH=true`.
 - Infrastructure artifacts: `Dockerfile` builds a minimal SSE-ready image, `uv.lock` pins Python dependencies, and `crawled_pages.sql` demonstrates the Supabase schema. Place temporary assets under `tmp/` (gitignored) and keep new modules inside `src/` or `knowledge_graphs/` as appropriate.
 
 ## Build, Test, and Development Commands
 - `uv pip install -e .` — install editable dependencies against Python 3.12 in the active `uv` virtualenv.
-- `uv run src/crawl4ai_mcp.py` — launch the MCP server locally (SSE by default); export `.env` variables such as `JINA_API_KEY`, `LLM_API_KEY`, `LLM_API_BASE`, `SUPABASE_URL`, and optional `USE_KNOWLEDGE_GRAPH=true` beforehand.
+- `uv run src/rag_mcp.py` — launch the MCP server locally (SSE by default); export `.env` variables such as `JINA_API_KEY`, `LLM_API_KEY`, `LLM_API_BASE`, `SUPABASE_URL`, and optional `USE_KNOWLEDGE_GRAPH=true` beforehand.
 - `docker build -t mcp/crawl4ai .` — produce a container image with the server entrypoint.
 - `docker run --rm -p 8051:8051 --env-file .env mcp/crawl4ai` — start the server in Docker for clients that expect `http://localhost:8051/sse`.
 
 ## Coding Style & Naming Conventions
 - Follow standard Python formatting: 4-space indentation, double-quoted docstrings, and module-level constants in `SCREAMING_SNAKE_CASE`.
 - Use descriptive, typed function signatures and async context managers when dealing with crawler or database lifecycles. Favor `snake_case` for functions/variables and `CamelCase` for classes/dataclasses.
-- Keep imports grouped (stdlib → third-party → local) as seen in `src/crawl4ai_mcp.py`, and guard optional dependencies with feature flags instead of brittle `try/except pass` blocks.
+- Keep imports grouped (stdlib → third-party → local) as seen in `src/rag_mcp.py`, and guard optional dependencies with feature flags instead of brittle `try/except pass` blocks.
 
 ## Testing Guidelines
 - Add new tests under `tests/` using `pytest`. Mirror filenames after their targets (e.g., `test_utils.py`) and focus on deterministic units by mocking Supabase, HTTP calls, and Neo4j clients.
