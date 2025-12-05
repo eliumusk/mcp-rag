@@ -136,6 +136,7 @@ The tool expands globs/directories, reads text (PDF support requires `pip instal
    ```
 
 5. Create a `.env` file based on the configuration section below
+   - Ensure you set `TENANT_ID` to a unique value (e.g., your org name) so Supabase rows are namespaced.
 
 ## Database Setup
 

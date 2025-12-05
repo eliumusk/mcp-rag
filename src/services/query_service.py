@@ -1,4 +1,5 @@
 """Helper functions shared by query-focused MCP tools."""
+import os
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from utils import jina_rerank_documents, search_code_examples, search_documents
@@ -73,6 +74,7 @@ def _keyword_document_search(
     query: str,
     source: Optional[str],
     match_count: int,
+    tenant_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     keyword_query = (
         supabase_client.from_("crawled_pages")
@@ -81,6 +83,8 @@ def _keyword_document_search(
     )
     if source and source.strip():
         keyword_query = keyword_query.eq("source_id", source)
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
+    keyword_query = keyword_query.eq("tenant_id", tenant)
     response = keyword_query.limit(match_count).execute()
     return response.data if response.data else []
 
@@ -90,6 +94,7 @@ def _keyword_code_search(
     query: str,
     source_id: Optional[str],
     match_count: int,
+    tenant_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     keyword_query = (
         supabase_client.from_("code_examples")
@@ -98,14 +103,17 @@ def _keyword_code_search(
     )
     if source_id and source_id.strip():
         keyword_query = keyword_query.eq("source_id", source_id)
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
+    keyword_query = keyword_query.eq("tenant_id", tenant)
     response = keyword_query.limit(match_count).execute()
     return response.data if response.data else []
 
 
-def fetch_sources(supabase_client: Any) -> List[Dict[str, Any]]:
+def fetch_sources(supabase_client: Any, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return all sources from Supabase."""
 
-    result = supabase_client.from_("sources").select("*").order("source_id").execute()
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
+    result = supabase_client.from_("sources").select("*").eq("tenant_id", tenant).order("source_id").execute()
     sources = []
     if result.data:
         for item in result.data:
@@ -113,7 +121,7 @@ def fetch_sources(supabase_client: Any) -> List[Dict[str, Any]]:
                 {
                     "source_id": item.get("source_id"),
                     "summary": item.get("summary"),
-                    "total_words": item.get("total_words"),
+                    "total_words": item.get("total_word_count"),
                     "created_at": item.get("created_at"),
                     "updated_at": item.get("updated_at"),
                 }
@@ -132,17 +140,21 @@ def execute_document_query(
     reranking_available: bool,
     vector_search_fn: Callable[..., List[Dict[str, Any]]] = search_documents,
     keyword_search_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute the document RAG query and return formatted payload."""
 
     filter_metadata = {"source": source} if source and source.strip() else None
     base_match_count = match_count * 2 if use_hybrid_search else match_count
 
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
+
     vector_results = vector_search_fn(
         client=supabase_client,
         query=query,
         match_count=base_match_count,
         filter_metadata=filter_metadata,
+        tenant_id=tenant,
     )
 
     if use_hybrid_search:
@@ -152,6 +164,7 @@ def execute_document_query(
             query,
             source,
             match_count * 2,
+            tenant_id=tenant,
         )
         results = _combine_semantic_and_keyword_results(
             vector_results,
@@ -207,17 +220,21 @@ def execute_code_example_query(
     reranking_available: bool,
     vector_search_fn: Callable[..., List[Dict[str, Any]]] = search_code_examples,
     keyword_search_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute the code example query and return formatted payload."""
 
     filter_metadata = {"source": source_id} if source_id and source_id.strip() else None
     base_match_count = match_count * 2 if use_hybrid_search else match_count
 
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
+
     vector_results = vector_search_fn(
         client=supabase_client,
         query=query,
         match_count=base_match_count,
         filter_metadata=filter_metadata,
+        tenant_id=tenant,
     )
 
     if use_hybrid_search:
@@ -227,6 +244,7 @@ def execute_code_example_query(
             query,
             source_id,
             match_count * 2,
+            tenant_id=tenant,
         )
         results = _combine_semantic_and_keyword_results(
             vector_results,

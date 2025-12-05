@@ -6,18 +6,23 @@ drop table if exists crawled_pages;
 drop table if exists code_examples;
 drop table if exists sources;
 
--- Create the sources table
 create table sources (
-    source_id text primary key,
+    tenant_id text not null,
+    source_id text not null,
     summary text,
     total_word_count integer default 0,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    primary key (tenant_id, source_id)
 );
+
+-- Index to speed up source lookups by tenant
+create index idx_sources_tenant on sources (tenant_id);
 
 -- Create the documentation chunks table
 create table crawled_pages (
     id bigserial primary key,
+    tenant_id text not null,
     url varchar not null,
     chunk_number integer not null,
     content text not null,
@@ -27,10 +32,10 @@ create table crawled_pages (
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     
     -- Add a unique constraint to prevent duplicate chunks for the same URL
-    unique(url, chunk_number),
+    unique(tenant_id, url, chunk_number),
     
     -- Add foreign key constraint to sources table
-    foreign key (source_id) references sources(source_id)
+    foreign key (tenant_id, source_id) references sources(tenant_id, source_id)
 );
 
 -- Create an index for better vector similarity search performance
@@ -39,11 +44,13 @@ create index on crawled_pages using ivfflat (embedding vector_cosine_ops);
 -- Create an index on metadata for faster filtering
 create index idx_crawled_pages_metadata on crawled_pages using gin (metadata);
 
--- Create an index on source_id for faster filtering
-CREATE INDEX idx_crawled_pages_source_id ON crawled_pages (source_id);
+-- Create indexes on tenant/source for faster filtering
+create index idx_crawled_pages_tenant on crawled_pages (tenant_id);
+create index idx_crawled_pages_tenant_source on crawled_pages (tenant_id, source_id);
 
 -- Create a function to search for documentation chunks
 create or replace function match_crawled_pages (
+  tenant_filter text,
   query_embedding vector(1024),
   match_count int default 10,
   filter jsonb DEFAULT '{}'::jsonb,
@@ -71,7 +78,8 @@ begin
     source_id,
     1 - (crawled_pages.embedding <=> query_embedding) as similarity
   from crawled_pages
-  where metadata @> filter
+  where tenant_id = tenant_filter
+    AND metadata @> filter
     AND (source_filter IS NULL OR source_id = source_filter)
   order by crawled_pages.embedding <=> query_embedding
   limit match_count;
@@ -101,6 +109,7 @@ create policy "Allow public read access to sources"
 -- Create the code_examples table
 create table code_examples (
     id bigserial primary key,
+    tenant_id text not null,
     url varchar not null,
     chunk_number integer not null,
     content text not null,  -- The code example content
@@ -111,10 +120,10 @@ create table code_examples (
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     
     -- Add a unique constraint to prevent duplicate chunks for the same URL
-    unique(url, chunk_number),
+    unique(tenant_id, url, chunk_number),
     
     -- Add foreign key constraint to sources table
-    foreign key (source_id) references sources(source_id)
+    foreign key (tenant_id, source_id) references sources(tenant_id, source_id)
 );
 
 -- Create an index for better vector similarity search performance
@@ -123,11 +132,13 @@ create index on code_examples using ivfflat (embedding vector_cosine_ops);
 -- Create an index on metadata for faster filtering
 create index idx_code_examples_metadata on code_examples using gin (metadata);
 
--- Create an index on source_id for faster filtering
-CREATE INDEX idx_code_examples_source_id ON code_examples (source_id);
+-- Create indexes on tenant/source for faster filtering
+create index idx_code_examples_tenant on code_examples (tenant_id);
+create index idx_code_examples_tenant_source on code_examples (tenant_id, source_id);
 
 -- Create a function to search for code examples
 create or replace function match_code_examples (
+  tenant_filter text,
   query_embedding vector(1024),
   match_count int default 10,
   filter jsonb DEFAULT '{}'::jsonb,
@@ -157,7 +168,8 @@ begin
     source_id,
     1 - (code_examples.embedding <=> query_embedding) as similarity
   from code_examples
-  where metadata @> filter
+  where tenant_id = tenant_filter
+    AND metadata @> filter
     AND (source_filter IS NULL OR source_id = source_filter)
   order by code_examples.embedding <=> query_embedding
   limit match_count;

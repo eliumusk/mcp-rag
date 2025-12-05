@@ -328,13 +328,14 @@ def process_chunk_with_context(args):
     return generate_contextual_embedding(full_document, content)
 
 def add_documents_to_supabase(
-    client: Client, 
-    urls: List[str], 
+    client: Client,
+    urls: List[str],
     chunk_numbers: List[int],
-    contents: List[str], 
+    contents: List[str],
     metadatas: List[Dict[str, Any]],
     url_to_full_document: Dict[str, str],
-    batch_size: int = 20
+    batch_size: int = 20,
+    tenant_id: Optional[str] = None,
 ) -> None:
     """
     Add documents to the Supabase crawled_pages table in batches.
@@ -349,6 +350,8 @@ def add_documents_to_supabase(
         url_to_full_document: Dictionary mapping URLs to their full document content
         batch_size: Size of each batch for insertion
     """
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
+
     # Get unique URLs to delete existing records
     unique_urls = list(set(urls))
     
@@ -356,13 +359,13 @@ def add_documents_to_supabase(
     try:
         if unique_urls:
             # Use the .in_() filter to delete all records with matching URLs
-            client.table("crawled_pages").delete().in_("url", unique_urls).execute()
+            client.table("crawled_pages").delete().eq("tenant_id", tenant).in_("url", unique_urls).execute()
     except Exception as e:
         print(f"Batch delete failed: {e}. Trying one-by-one deletion as fallback.")
         # Fallback: delete records one by one
         for url in unique_urls:
             try:
-                client.table("crawled_pages").delete().eq("url", url).execute()
+                client.table("crawled_pages").delete().eq("tenant_id", tenant).eq("url", url).execute()
             except Exception as inner_e:
                 print(f"Error deleting record for URL {url}: {inner_e}")
                 # Continue with the next URL even if one fails
@@ -442,7 +445,8 @@ def add_documents_to_supabase(
                     **batch_metadatas[j]
                 },
                 "source_id": source_id,  # Add source_id field
-                "embedding": batch_embeddings[j]  # Use embedding from contextual content
+                "embedding": batch_embeddings[j],  # Use embedding from contextual content
+                "tenant_id": tenant,
             }
             
             batch_data.append(data)
@@ -479,10 +483,11 @@ def add_documents_to_supabase(
                         print(f"Successfully inserted {successful_inserts}/{len(batch_data)} records individually")
 
 def search_documents(
-    client: Client, 
-    query: str, 
-    match_count: int = 10, 
-    filter_metadata: Optional[Dict[str, Any]] = None
+    client: Client,
+    query: str,
+    match_count: int = 10,
+    filter_metadata: Optional[Dict[str, Any]] = None,
+    tenant_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Search for documents in Supabase using vector similarity.
@@ -498,13 +503,15 @@ def search_documents(
     """
     # Create embedding for the query
     query_embedding = create_embedding(query)
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
     
     # Execute the search using the match_crawled_pages function
     try:
         # Only include filter parameter if filter_metadata is provided and not empty
         params = {
+            'tenant_filter': tenant,
             'query_embedding': query_embedding,
-            'match_count': match_count
+            'match_count': match_count,
         }
         
         # Only add the filter if it's actually provided and not empty
@@ -656,7 +663,8 @@ def add_code_examples_to_supabase(
     code_examples: List[str],
     summaries: List[str],
     metadatas: List[Dict[str, Any]],
-    batch_size: int = 20
+    batch_size: int = 20,
+    tenant_id: Optional[str] = None,
 ):
     """
     Add code examples to the Supabase code_examples table in batches.
@@ -673,11 +681,13 @@ def add_code_examples_to_supabase(
     if not urls:
         return
         
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
+        
     # Delete existing records for these URLs
     unique_urls = list(set(urls))
     for url in unique_urls:
         try:
-            client.table('code_examples').delete().eq('url', url).execute()
+            client.table('code_examples').delete().eq('tenant_id', tenant).eq('url', url).execute()
         except Exception as e:
             print(f"Error deleting existing code examples for {url}: {e}")
     
@@ -722,7 +732,8 @@ def add_code_examples_to_supabase(
                 'summary': summaries[idx],
                 'metadata': metadatas[idx],  # Store as JSON object, not string
                 'source_id': source_id,
-                'embedding': embedding
+                'embedding': embedding,
+                'tenant_id': tenant
             })
         
         # Insert batch into Supabase with retry logic
@@ -758,7 +769,7 @@ def add_code_examples_to_supabase(
         print(f"Inserted batch {i//batch_size + 1} of {(total_items + batch_size - 1)//batch_size} code examples")
 
 
-def update_source_info(client: Client, source_id: str, summary: str, word_count: int):
+def update_source_info(client: Client, source_id: str, summary: str, word_count: int, tenant_id: Optional[str] = None):
     """
     Update or insert source information in the sources table.
     
@@ -769,19 +780,21 @@ def update_source_info(client: Client, source_id: str, summary: str, word_count:
         word_count: Total word count for the source
     """
     try:
+        tenant = tenant_id or os.getenv("TENANT_ID", "default")
         # Try to update existing source
         result = client.table('sources').update({
             'summary': summary,
             'total_word_count': word_count,
             'updated_at': 'now()'
-        }).eq('source_id', source_id).execute()
+        }).eq('source_id', source_id).eq('tenant_id', tenant).execute()
         
         # If no rows were updated, insert new source
         if not result.data:
             client.table('sources').insert({
                 'source_id': source_id,
                 'summary': summary,
-                'total_word_count': word_count
+                'total_word_count': word_count,
+                'tenant_id': tenant
             }).execute()
             print(f"Created new source: {source_id}")
         else:
@@ -848,11 +861,12 @@ The above content is from the documentation for '{source_id}'. Please provide a 
 
 
 def search_code_examples(
-    client: Client, 
-    query: str, 
-    match_count: int = 10, 
+    client: Client,
+    query: str,
+    match_count: int = 10,
     filter_metadata: Optional[Dict[str, Any]] = None,
-    source_id: Optional[str] = None
+    source_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Search for code examples in Supabase using vector similarity.
@@ -873,13 +887,15 @@ def search_code_examples(
     
     # Create embedding for the enhanced query
     query_embedding = create_embedding(enhanced_query)
+    tenant = tenant_id or os.getenv("TENANT_ID", "default")
     
     # Execute the search using the match_code_examples function
     try:
         # Only include filter parameter if filter_metadata is provided and not empty
         params = {
+            'tenant_filter': tenant,
             'query_embedding': query_embedding,
-            'match_count': match_count
+            'match_count': match_count,
         }
         
         # Only add the filter if it's actually provided and not empty

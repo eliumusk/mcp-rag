@@ -45,6 +45,7 @@ class Crawl4AIContext:
     """Context shared across MCP tools."""
 
     supabase_client: Client
+    tenant_id: str
     reranking_enabled: bool = False
     knowledge_validator: Optional[Any] = None
     repo_extractor: Optional[Any] = None
@@ -100,12 +101,14 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
     """Manage crawler and database clients across the MCP lifespan."""
 
     supabase_client = get_supabase_client()
+    tenant_id = os.getenv("TENANT_ID", "default")
     reranking_enabled = _should_enable_reranking()
     knowledge_validator, repo_extractor = await _initialize_knowledge_graph_components()
 
     try:
         yield Crawl4AIContext(
             supabase_client=supabase_client,
+            tenant_id=tenant_id,
             reranking_enabled=reranking_enabled,
             knowledge_validator=knowledge_validator,
             repo_extractor=repo_extractor,

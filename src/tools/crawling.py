@@ -152,10 +152,12 @@ async def crawl_recursive_internal_links(
     return results
 
 
-async def crawl_single_page(ctx: Context, url: str) -> str:
+async def crawl_single_page(ctx: Context, url: str, tenant_id: str | None = None) -> str:
     tool_name = "crawl_single_page"
     try:
         supabase_client = ctx.request_context.lifespan_context.supabase_client
+        default_tenant = ctx.request_context.lifespan_context.tenant_id
+        tenant = tenant_id or default_tenant
         markdown = await fetch_markdown(url)
         if not markdown:
             return error_response("CRAWL_NO_CONTENT", "No content returned from target", details={"url": url})
@@ -184,8 +186,16 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
 
         url_to_full_document = {url: markdown}
         source_summary = extract_source_summary(source_id, markdown[:5000])
-        update_source_info(supabase_client, source_id, source_summary, total_word_count)
-        add_documents_to_supabase(supabase_client, urls, chunk_numbers, contents, metadatas, url_to_full_document)
+        update_source_info(supabase_client, source_id, source_summary, total_word_count, tenant_id=tenant)
+        add_documents_to_supabase(
+            supabase_client,
+            urls,
+            chunk_numbers,
+            contents,
+            metadatas,
+            url_to_full_document,
+            tenant_id=tenant,
+        )
 
         code_examples_stored = 0
         if os.getenv("USE_AGENTIC_RAG", "false") == "true":
@@ -223,6 +233,7 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                     code_examples,
                     code_summaries,
                     code_metadatas,
+                    tenant_id=tenant,
                 )
                 code_examples_stored = len(code_examples)
 
@@ -251,11 +262,18 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
 
 
 async def smart_crawl_url(
-    ctx: Context, url: str, max_depth: int = 3, max_concurrent: int = 10, chunk_size: int = 5000
+    ctx: Context,
+    url: str,
+    max_depth: int = 3,
+    max_concurrent: int = 10,
+    chunk_size: int = 5000,
+    tenant_id: str | None = None,
 ) -> str:
     tool_name = "smart_crawl_url"
     try:
         supabase_client = ctx.request_context.lifespan_context.supabase_client
+        default_tenant = ctx.request_context.lifespan_context.tenant_id
+        tenant = tenant_id or default_tenant
 
         if is_txt(url):
             crawl_results = await crawl_markdown_file(url)
@@ -316,7 +334,7 @@ async def smart_crawl_url(
 
         for (source_id, _), summary in zip(source_summary_args, source_summaries):
             word_count = source_word_counts.get(source_id, 0)
-            update_source_info(supabase_client, source_id, summary, word_count)
+            update_source_info(supabase_client, source_id, summary, word_count, tenant_id=tenant)
 
         batch_size = 20
         add_documents_to_supabase(
@@ -327,6 +345,7 @@ async def smart_crawl_url(
             metadatas,
             url_to_full_document,
             batch_size=batch_size,
+            tenant_id=tenant,
         )
 
         code_examples: List[str] = []
@@ -374,6 +393,7 @@ async def smart_crawl_url(
                     code_summaries,
                     code_metadatas,
                     batch_size=batch_size,
+                    tenant_id=tenant,
                 )
 
         log_info(

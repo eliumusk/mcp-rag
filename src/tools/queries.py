@@ -13,10 +13,12 @@ from services.query_service import (
 from services.responses import error_response, success_response
 
 
-async def get_available_sources(ctx: Context) -> str:
+async def get_available_sources(ctx: Context, tenant_id: str | None = None) -> str:
     try:
         supabase_client = ctx.request_context.lifespan_context.supabase_client
-        sources = fetch_sources(supabase_client)
+        default_tenant = ctx.request_context.lifespan_context.tenant_id
+        tenant = tenant_id or default_tenant
+        sources = fetch_sources(supabase_client, tenant_id=tenant)
         log_info("get_available_sources", "completed", count=len(sources))
         return success_response("Fetched available sources", data={"sources": sources, "count": len(sources)})
     except Exception as exc:
@@ -24,9 +26,17 @@ async def get_available_sources(ctx: Context) -> str:
         return error_response("SOURCES_FETCH_FAILED", "Failed to fetch sources", details={"reason": str(exc)})
 
 
-async def perform_rag_query(ctx: Context, query: str, source: str | None = None, match_count: int = 5) -> str:
+async def perform_rag_query(
+    ctx: Context,
+    query: str,
+    source: str | None = None,
+    match_count: int = 5,
+    tenant_id: str | None = None,
+) -> str:
     try:
         supabase_client = ctx.request_context.lifespan_context.supabase_client
+        default_tenant = ctx.request_context.lifespan_context.tenant_id
+        tenant = tenant_id or default_tenant
         use_hybrid_search = os.getenv("USE_HYBRID_SEARCH", "false") == "true"
         use_reranking = os.getenv("USE_RERANKING", "false") == "true"
         reranking_available = ctx.request_context.lifespan_context.reranking_enabled
@@ -39,6 +49,7 @@ async def perform_rag_query(ctx: Context, query: str, source: str | None = None,
             use_hybrid_search=use_hybrid_search,
             use_reranking=use_reranking,
             reranking_available=reranking_available,
+            tenant_id=tenant,
         )
         log_info(
             "perform_rag_query",
@@ -58,6 +69,7 @@ async def search_code_examples(
     query: str,
     source_id: str | None = None,
     match_count: int = 5,
+    tenant_id: str | None = None,
 ) -> str:
     if os.getenv("USE_AGENTIC_RAG", "false") != "true":
         return error_response(
@@ -67,6 +79,8 @@ async def search_code_examples(
 
     try:
         supabase_client = ctx.request_context.lifespan_context.supabase_client
+        default_tenant = ctx.request_context.lifespan_context.tenant_id
+        tenant = tenant_id or default_tenant
         use_hybrid_search = os.getenv("USE_HYBRID_SEARCH", "false") == "true"
         use_reranking = os.getenv("USE_RERANKING", "false") == "true"
         reranking_available = ctx.request_context.lifespan_context.reranking_enabled
@@ -79,6 +93,7 @@ async def search_code_examples(
             use_hybrid_search=use_hybrid_search,
             use_reranking=use_reranking,
             reranking_available=reranking_available,
+            tenant_id=tenant,
         )
         log_info(
             "search_code_examples",

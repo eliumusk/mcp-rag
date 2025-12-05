@@ -33,10 +33,13 @@ async def ingest_local_files(
     file_paths: str,
     source_id: str | None = None,
     recursive: bool = False,
+    tenant_id: str | None = None,
 ) -> str:
     """Ingest markdown/text/PDF files into Supabase."""
 
     supabase_client = ctx.request_context.lifespan_context.supabase_client
+    default_tenant = ctx.request_context.lifespan_context.tenant_id
+    tenant = tenant_id or default_tenant
     parsed_paths = parse_file_paths_input(file_paths)
     if not parsed_paths:
         return error_response(
@@ -102,7 +105,7 @@ async def ingest_local_files(
         url_to_full_document = {url: content}
         try:
             source_summary = extract_source_summary(derived_source, content[:5000])
-            update_source_info(supabase_client, derived_source, source_summary, total_word_count)
+            update_source_info(supabase_client, derived_source, source_summary, total_word_count, tenant_id=tenant)
             add_documents_to_supabase(
                 supabase_client,
                 urls,
@@ -110,6 +113,7 @@ async def ingest_local_files(
                 contents,
                 metadatas,
                 url_to_full_document,
+                tenant_id=tenant,
             )
         except Exception as exc:
             error_msg = f"{file_path}: Failed to insert chunks ({exc})"
@@ -153,6 +157,7 @@ async def ingest_local_files(
                     code_examples,
                     code_summaries,
                     code_metadatas,
+                    tenant_id=tenant,
                 )
                 code_examples_stored = len(code_examples)
 
