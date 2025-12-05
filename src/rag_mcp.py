@@ -26,8 +26,8 @@ from tools.queries import register_query_tools
 
 
 mcp = FastMCP(
-    "mcp-crawl4ai-rag",
-    description="MCP server for RAG and web crawling with Crawl4AI",
+    "rag-mcp",
+    description="MCP server for RAG and web crawling with Jina",
     lifespan=crawl4ai_lifespan,
     host=os.getenv("HOST", "0.0.0.0"),
     port=os.getenv("PORT", "8051"),

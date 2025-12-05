@@ -1,5 +1,5 @@
 """Server lifecycle utilities for the Crawl4AI MCP instance."""
-from __future__ import annotations
+
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass

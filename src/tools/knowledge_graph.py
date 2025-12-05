@@ -8,6 +8,8 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from ai_script_analyzer import AIScriptAnalyzer
 from hallucination_reporter import HallucinationReporter
+from services.logger import log_error, log_info, log_warning
+from services.responses import error_response, success_response
 
 
 def validate_script_path(script_path: str) -> Dict[str, Any]:
@@ -37,42 +39,42 @@ def validate_github_url(repo_url: str) -> Dict[str, Any]:
 
 
 async def check_ai_script_hallucinations(ctx: Context, script_path: str) -> str:
+    tool_name = "check_ai_script_hallucinations"
     try:
         if os.getenv("USE_KNOWLEDGE_GRAPH", "false") != "true":
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "Knowledge graph functionality is disabled. Set USE_KNOWLEDGE_GRAPH=true in environment.",
-                },
-                indent=2,
+            return error_response(
+                "KNOWLEDGE_GRAPH_DISABLED",
+                "Knowledge graph functionality is disabled. Set USE_KNOWLEDGE_GRAPH=true in environment.",
             )
 
         knowledge_validator = ctx.request_context.lifespan_context.knowledge_validator
         if not knowledge_validator:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "Knowledge graph validator not available. Check Neo4j configuration in environment variables.",
-                },
-                indent=2,
+            return error_response(
+                "NEO4J_UNAVAILABLE",
+                "Knowledge graph validator not available. Check Neo4j configuration in environment variables.",
             )
 
         validation = validate_script_path(script_path)
         if not validation["valid"]:
-            return json.dumps({"success": False, "script_path": script_path, "error": validation["error"]}, indent=2)
+            return error_response(
+                "INVALID_INPUT",
+                "Script validation failed",
+                details={"script_path": script_path, "reason": validation["error"]},
+            )
 
         analyzer = AIScriptAnalyzer()
         analysis_result = analyzer.analyze_script(script_path)
         if analysis_result.errors:
-            print(f"Analysis warnings for {script_path}: {analysis_result.errors}")
+            log_warning(tool_name, "analysis_warnings", script_path=script_path, warnings=analysis_result.errors)
 
         validation_result = await knowledge_validator.validate_script(analysis_result)
         reporter = HallucinationReporter()
         report = reporter.generate_comprehensive_report(validation_result)
 
-        return json.dumps(
-            {
-                "success": True,
+        log_info(tool_name, "completed", script_path=script_path)
+        return success_response(
+            "Hallucination analysis completed",
+            data={
                 "script_path": script_path,
                 "overall_confidence": validation_result.overall_confidence,
                 "validation_summary": report["validation_summary"],
@@ -81,10 +83,14 @@ async def check_ai_script_hallucinations(ctx: Context, script_path: str) -> str:
                 "analysis_metadata": report["analysis_metadata"],
                 "libraries_analyzed": report.get("libraries_analyzed", []),
             },
-            indent=2,
         )
     except Exception as exc:
-        return json.dumps({"success": False, "script_path": script_path, "error": f"Analysis failed: {exc}"}, indent=2)
+        log_error(tool_name, "failed", script_path=script_path, error=str(exc))
+        return error_response(
+            "HALLUCINATION_ANALYSIS_FAILED",
+            "Analysis failed",
+            details={"script_path": script_path, "reason": str(exc)},
+        )
 
 
 async def query_knowledge_graph(ctx: Context, command: str) -> str:

@@ -5,11 +5,12 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import concurrent.futures
-import json
 import os
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from services.logger import log_error, log_info, log_warning
+from services.responses import error_response, success_response
 from text_processing import (
     collect_local_files,
     extract_section_info,
@@ -38,17 +39,14 @@ async def ingest_local_files(
     supabase_client = ctx.request_context.lifespan_context.supabase_client
     parsed_paths = parse_file_paths_input(file_paths)
     if not parsed_paths:
-        return json.dumps(
-            {"success": False, "error": "No file paths provided. Pass a JSON array, newline, or comma-separated paths."},
-            indent=2,
+        return error_response(
+            "INVALID_INPUT",
+            "No file paths provided. Pass a JSON array, newline, or comma-separated paths.",
         )
 
     files = collect_local_files(parsed_paths, recursive=recursive)
     if not files:
-        return json.dumps(
-            {"success": False, "error": "No matching files were found for the provided paths."},
-            indent=2,
-        )
+        return error_response("FILES_NOT_FOUND", "No matching files were found for the provided paths.")
 
     ingest_time = datetime.utcnow().isoformat()
     enable_code_examples = os.getenv("USE_AGENTIC_RAG", "false") == "true"
@@ -62,11 +60,15 @@ async def ingest_local_files(
         try:
             content = load_local_document(str(file_path))
         except Exception as exc:
-            errors.append(f"{file_path}: {exc}")
+            error_msg = f"{file_path}: {exc}"
+            log_error("ingest_local_files", "load_failed", file=str(file_path), error=str(exc))
+            errors.append(error_msg)
             continue
 
         if not content or not content.strip():
-            errors.append(f"{file_path}: File is empty after extraction.")
+            error_msg = f"{file_path}: File is empty after extraction."
+            errors.append(error_msg)
+            log_warning("ingest_local_files", "empty_file", file=str(file_path))
             continue
 
         url = f"file://{file_path.as_posix()}"
@@ -74,7 +76,9 @@ async def ingest_local_files(
         chunks = smart_chunk_markdown(content)
 
         if not chunks:
-            errors.append(f"{file_path}: No chunks were produced (file may be too small).")
+            error_msg = f"{file_path}: No chunks were produced (file may be too small)."
+            errors.append(error_msg)
+            log_warning("ingest_local_files", "no_chunks", file=str(file_path))
             continue
 
         urls: List[str] = []
@@ -108,7 +112,9 @@ async def ingest_local_files(
                 url_to_full_document,
             )
         except Exception as exc:
-            errors.append(f"{file_path}: Failed to insert chunks ({exc})")
+            error_msg = f"{file_path}: Failed to insert chunks ({exc})"
+            errors.append(error_msg)
+            log_error("ingest_local_files", "supabase_insert_failed", file=str(file_path), error=str(exc))
             continue
 
         code_examples_stored = 0
@@ -163,15 +169,34 @@ async def ingest_local_files(
         total_chunks += len(chunks)
         total_files += 1
 
-    return json.dumps(
-        {
-            "success": total_files > 0,
-            "files_processed": total_files,
-            "chunks_stored": total_chunks,
-            "results": summaries,
-            "errors": errors,
-        },
-        indent=2,
+    if total_files:
+        log_info(
+            "ingest_local_files",
+            "completed",
+            files_processed=total_files,
+            chunks=total_chunks,
+            errors=len(errors),
+        )
+        return success_response(
+            "Files ingested successfully",
+            data={
+                "files_processed": total_files,
+                "chunks_stored": total_chunks,
+                "results": summaries,
+                "errors": errors,
+            },
+        )
+
+    log_warning(
+        "ingest_local_files",
+        "no_files_ingested",
+        requested=len(parsed_paths),
+        errors=len(errors),
+    )
+    return error_response(
+        "INGESTION_FAILED",
+        "Failed to ingest any files",
+        details={"errors": errors},
     )
 
 

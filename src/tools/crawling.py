@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Set
 
 import asyncio
 import concurrent.futures
-import json
 import os
 import re
 from urllib.parse import urljoin, urlparse, urldefrag
@@ -13,6 +12,8 @@ from xml.etree import ElementTree
 import requests
 from mcp.server.fastmcp import Context, FastMCP
 
+from services.logger import log_error, log_info, log_warning
+from services.responses import error_response, success_response
 from text_processing import extract_section_info, process_code_example, smart_chunk_markdown
 from utils import (
     add_code_examples_to_supabase,
@@ -43,13 +44,14 @@ def is_txt(url: str) -> bool:
 def parse_sitemap(sitemap_url: str) -> List[str]:
     resp = requests.get(sitemap_url, headers={"User-Agent": HTML_USER_AGENT}, timeout=REQUEST_TIMEOUT)
     if resp.status_code != 200:
+        log_warning("crawling", "sitemap_fetch_failed", sitemap_url=sitemap_url, status=resp.status_code)
         return []
 
     try:
         tree = ElementTree.fromstring(resp.content)
         return [loc.text for loc in tree.findall(".//{*}loc") if loc.text]
     except Exception as exc:  # pragma: no cover - defensive logging
-        print(f"Error parsing sitemap XML: {exc}")
+        log_error("crawling", "sitemap_parse_failed", sitemap_url=sitemap_url, error=str(exc))
         return []
 
 
@@ -66,6 +68,7 @@ def fetch_with_jina(target_url: str) -> str:
 
     resp = requests.get(proxy_url, headers=headers, timeout=REQUEST_TIMEOUT)
     if resp.status_code != 200:
+        log_error("crawling", "jina_fetch_failed", url=target_url, status=resp.status_code)
         raise RuntimeError(f"Jina fetch failed for {target_url}: HTTP {resp.status_code}")
     return resp.text
 
@@ -99,7 +102,7 @@ async def crawl_markdown_file(url: str) -> List[Dict[str, Any]]:
         markdown = await fetch_markdown(url)
         return [{"url": url, "markdown": markdown}]
     except Exception as exc:
-        print(f"Failed to fetch {url}: {exc}")
+        log_error("crawling", "markdown_fetch_failed", url=url, error=str(exc))
         return []
 
 
@@ -114,7 +117,7 @@ async def crawl_batch(urls: List[str], max_concurrent: int = 10) -> List[Dict[st
                 if markdown:
                     results.append({"url": target_url, "markdown": markdown})
             except Exception as exc:
-                print(f"Failed to fetch {target_url}: {exc}")
+                log_error("crawling", "batch_fetch_failed", url=target_url, error=str(exc))
 
     await asyncio.gather(*(fetch_one(url) for url in urls))
     return results
@@ -142,7 +145,7 @@ async def crawl_recursive_internal_links(
                 html = fetch_html_for_links(url)
                 new_urls |= extract_internal_links(url, html)
             except Exception as exc:
-                print(f"Failed to extract links from {url}: {exc}")
+                log_error("crawling", "link_extraction_failed", url=url, error=str(exc))
 
         current_urls = new_urls
 
@@ -150,11 +153,12 @@ async def crawl_recursive_internal_links(
 
 
 async def crawl_single_page(ctx: Context, url: str) -> str:
+    tool_name = "crawl_single_page"
     try:
         supabase_client = ctx.request_context.lifespan_context.supabase_client
         markdown = await fetch_markdown(url)
         if not markdown:
-            return json.dumps({"success": False, "url": url, "error": "No content returned"}, indent=2)
+            return error_response("CRAWL_NO_CONTENT", "No content returned from target", details={"url": url})
 
         parsed_url = urlparse(url)
         source_id = parsed_url.netloc or parsed_url.path
@@ -184,46 +188,55 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
         add_documents_to_supabase(supabase_client, urls, chunk_numbers, contents, metadatas, url_to_full_document)
 
         code_examples_stored = 0
-        code_blocks = extract_code_blocks(markdown)
-        if os.getenv("USE_AGENTIC_RAG", "false") == "true" and code_blocks:
-            code_urls = []
-            code_chunk_numbers = []
-            code_examples = []
-            code_summaries = []
-            code_metadatas = []
+        if os.getenv("USE_AGENTIC_RAG", "false") == "true":
+            code_blocks = extract_code_blocks(markdown)
+            if code_blocks:
+                code_urls = []
+                code_chunk_numbers = []
+                code_examples = []
+                code_summaries = []
+                code_metadatas = []
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                summary_args = [(block["code"], block["context_before"], block["context_after"]) for block in code_blocks]
-                summaries = list(executor.map(process_code_example, summary_args))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    summary_args = [(block["code"], block["context_before"], block["context_after"]) for block in code_blocks]
+                    summaries = list(executor.map(process_code_example, summary_args))
 
-            for i, (block, summary) in enumerate(zip(code_blocks, summaries)):
-                code_urls.append(url)
-                code_chunk_numbers.append(i)
-                code_examples.append(block["code"])
-                code_summaries.append(summary)
-                code_metadatas.append(
-                    {
-                        "chunk_index": i,
-                        "url": url,
-                        "source": source_id,
-                        "char_count": len(block["code"]),
-                        "word_count": len(block["code"].split()),
-                    }
+                for i, (block, summary) in enumerate(zip(code_blocks, summaries)):
+                    code_urls.append(url)
+                    code_chunk_numbers.append(i)
+                    code_examples.append(block["code"])
+                    code_summaries.append(summary)
+                    code_metadatas.append(
+                        {
+                            "chunk_index": i,
+                            "url": url,
+                            "source": source_id,
+                            "char_count": len(block["code"]),
+                            "word_count": len(block["code"].split()),
+                        }
+                    )
+
+                add_code_examples_to_supabase(
+                    supabase_client,
+                    code_urls,
+                    code_chunk_numbers,
+                    code_examples,
+                    code_summaries,
+                    code_metadatas,
                 )
+                code_examples_stored = len(code_examples)
 
-            add_code_examples_to_supabase(
-                supabase_client,
-                code_urls,
-                code_chunk_numbers,
-                code_examples,
-                code_summaries,
-                code_metadatas,
-            )
-            code_examples_stored = len(code_examples)
-
-        return json.dumps(
-            {
-                "success": True,
+        log_info(
+            tool_name,
+            "completed",
+            url=url,
+            source_id=source_id,
+            chunks=len(chunks),
+            code_examples=code_examples_stored,
+        )
+        return success_response(
+            "Page crawled successfully",
+            data={
                 "url": url,
                 "chunks_stored": len(chunks),
                 "code_examples_stored": code_examples_stored,
@@ -231,15 +244,16 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                 "total_word_count": total_word_count,
                 "source_id": source_id,
             },
-            indent=2,
         )
     except Exception as exc:
-        return json.dumps({"success": False, "url": url, "error": str(exc)}, indent=2)
+        log_error(tool_name, "failed", url=url, error=str(exc))
+        return error_response("CRAWL_SINGLE_PAGE_FAILED", "Failed to crawl page", details={"url": url, "reason": str(exc)})
 
 
 async def smart_crawl_url(
     ctx: Context, url: str, max_depth: int = 3, max_concurrent: int = 10, chunk_size: int = 5000
 ) -> str:
+    tool_name = "smart_crawl_url"
     try:
         supabase_client = ctx.request_context.lifespan_context.supabase_client
 
@@ -249,7 +263,7 @@ async def smart_crawl_url(
         elif is_sitemap(url):
             sitemap_urls = parse_sitemap(url)
             if not sitemap_urls:
-                return json.dumps({"success": False, "url": url, "error": "No URLs found in sitemap"}, indent=2)
+                return error_response("SITEMAP_EMPTY", "No URLs found in sitemap", details={"url": url})
             crawl_results = await crawl_batch(sitemap_urls, max_concurrent=max_concurrent)
             crawl_type = "sitemap"
         else:
@@ -257,7 +271,7 @@ async def smart_crawl_url(
             crawl_type = "webpage"
 
         if not crawl_results:
-            return json.dumps({"success": False, "url": url, "error": "No content found"}, indent=2)
+            return error_response("CRAWL_NO_CONTENT", "No content found", details={"url": url})
 
         urls: List[str] = []
         chunk_numbers: List[int] = []
@@ -362,9 +376,18 @@ async def smart_crawl_url(
                     batch_size=batch_size,
                 )
 
-        return json.dumps(
-            {
-                "success": True,
+        log_info(
+            tool_name,
+            "completed",
+            url=url,
+            crawl_type=crawl_type,
+            pages=len(crawl_results),
+            chunks=chunk_count,
+            code_examples=len(code_examples),
+        )
+        return success_response(
+            "Smart crawl completed",
+            data={
                 "url": url,
                 "crawl_type": crawl_type,
                 "pages_crawled": len(crawl_results),
@@ -374,10 +397,10 @@ async def smart_crawl_url(
                 "urls_crawled": [doc["url"] for doc in crawl_results][:5]
                 + (["..."] if len(crawl_results) > 5 else []),
             },
-            indent=2,
         )
     except Exception as exc:
-        return json.dumps({"success": False, "url": url, "error": str(exc)}, indent=2)
+        log_error(tool_name, "failed", url=url, error=str(exc))
+        return error_response("SMART_CRAWL_FAILED", "Failed to crawl target", details={"url": url, "reason": str(exc)})
 
 
 def register_crawling_tools(mcp: FastMCP) -> None:

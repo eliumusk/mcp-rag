@@ -1,6 +1,4 @@
 """Helper functions shared by query-focused MCP tools."""
-from __future__ import annotations
-
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from utils import jina_rerank_documents, search_code_examples, search_documents
@@ -189,7 +187,6 @@ def execute_document_query(
         formatted_results.append(payload)
 
     return {
-        "success": True,
         "query": query,
         "source_filter": source,
         "search_mode": "hybrid" if use_hybrid_search else "vector",
@@ -268,7 +265,6 @@ def execute_code_example_query(
         formatted_results.append(payload)
 
     return {
-        "success": True,
         "query": query,
         "source_filter": source_id,
         "search_mode": "hybrid" if use_hybrid_search else "vector",
