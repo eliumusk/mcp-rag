@@ -94,35 +94,26 @@ async def check_ai_script_hallucinations(ctx: Context, script_path: str) -> str:
 
 
 async def query_knowledge_graph(ctx: Context, command: str) -> str:
+    tool_name = "query_knowledge_graph"
     try:
         if os.getenv("USE_KNOWLEDGE_GRAPH", "false") != "true":
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "Knowledge graph functionality is disabled. Set USE_KNOWLEDGE_GRAPH=true in environment.",
-                },
-                indent=2,
+            return error_response(
+                "KNOWLEDGE_GRAPH_DISABLED",
+                "Knowledge graph functionality is disabled. Set USE_KNOWLEDGE_GRAPH=true in environment.",
             )
 
         repo_extractor = ctx.request_context.lifespan_context.repo_extractor
         if not repo_extractor or not repo_extractor.driver:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "Neo4j connection not available. Check Neo4j configuration in environment variables.",
-                },
-                indent=2,
+            return error_response(
+                "NEO4J_UNAVAILABLE",
+                "Neo4j connection not available. Check Neo4j configuration in environment variables.",
             )
 
         cleaned_command = command.strip()
         if not cleaned_command:
-            return json.dumps(
-                {
-                    "success": False,
-                    "command": "",
-                    "error": "Command cannot be empty. Available commands: repos, explore <repo>, classes [repo], class <name>, method <name> [class], query <cypher>",
-                },
-                indent=2,
+            return error_response(
+                "INVALID_INPUT",
+                "Command cannot be empty. Available commands: repos, explore <repo>, classes [repo], class <name>, method <name> [class], query <cypher>",
             )
 
         parts = cleaned_command.split()
@@ -131,95 +122,81 @@ async def query_knowledge_graph(ctx: Context, command: str) -> str:
 
         async with repo_extractor.driver.session() as session:
             if cmd == "repos":
-                return await _handle_repos_command(session, cleaned_command)
+                result = await _handle_repos_command(session, cleaned_command)
+                log_info(tool_name, "completed", command=cmd)
+                return success_response("Listed repositories", data=result)
             if cmd == "explore":
                 if not args:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "command": cleaned_command,
-                            "error": "Repository name required. Usage: explore <repo_name>",
-                        },
-                        indent=2,
+                    return error_response(
+                        "INVALID_INPUT",
+                        "Repository name required. Usage: explore <repo_name>",
                     )
-                return await _handle_explore_command(session, cleaned_command, args[0])
+                result = await _handle_explore_command(session, cleaned_command, args[0])
+                log_info(tool_name, "completed", command=cmd, repo=args[0])
+                return success_response("Repository explored", data=result)
             if cmd == "classes":
                 repo_name = args[0] if args else None
-                return await _handle_classes_command(session, cleaned_command, repo_name)
+                result = await _handle_classes_command(session, cleaned_command, repo_name)
+                log_info(tool_name, "completed", command=cmd, repo=repo_name)
+                return success_response("Classes listed", data=result)
             if cmd == "class":
                 if not args:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "command": cleaned_command,
-                            "error": "Class name required. Usage: class <class_name>",
-                        },
-                        indent=2,
+                    return error_response(
+                        "INVALID_INPUT",
+                        "Class name required. Usage: class <class_name>",
                     )
-                return await _handle_class_command(session, cleaned_command, args[0])
+                result = await _handle_class_command(session, cleaned_command, args[0])
+                log_info(tool_name, "completed", command=cmd, class_name=args[0])
+                return success_response("Class inspected", data=result)
             if cmd == "method":
                 if not args:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "command": cleaned_command,
-                            "error": "Method name required. Usage: method <method_name> [class_name]",
-                        },
-                        indent=2,
+                    return error_response(
+                        "INVALID_INPUT",
+                        "Method name required. Usage: method <method_name> [class_name]",
                     )
                 method_name = args[0]
                 class_name = args[1] if len(args) > 1 else None
-                return await _handle_method_command(session, cleaned_command, method_name, class_name)
+                result = await _handle_method_command(session, cleaned_command, method_name, class_name)
+                log_info(tool_name, "completed", command=cmd, method=method_name, class_name=class_name)
+                return success_response("Method inspected", data=result)
             if cmd == "query":
                 if not args:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "command": cleaned_command,
-                            "error": "Cypher query required. Usage: query <cypher_query>",
-                        },
-                        indent=2,
+                    return error_response(
+                        "INVALID_INPUT",
+                        "Cypher query required. Usage: query <cypher_query>",
                     )
                 cypher_query = " ".join(args)
-                return await _handle_query_command(session, cleaned_command, cypher_query)
-            return json.dumps(
-                {
-                    "success": False,
-                    "command": cleaned_command,
-                    "error": "Unknown command '{cmd}'. Available commands: repos, explore <repo>, classes [repo], class <name>, method <name> [class], query <cypher>",
-                },
-                indent=2,
+                result = await _handle_query_command(session, cleaned_command, cypher_query)
+                log_info(tool_name, "completed", command=cmd)
+                return success_response("Query executed", data=result)
+            return error_response(
+                "UNKNOWN_COMMAND",
+                f"Unknown command '{cmd}'. Available commands: repos, explore <repo>, classes [repo], class <name>, method <name> [class], query <cypher>",
             )
     except Exception as exc:
-        return json.dumps({"success": False, "command": command, "error": f"Query execution failed: {exc}"}, indent=2)
+        log_error(tool_name, "failed", command=command, error=str(exc))
+        return error_response("KNOWLEDGE_GRAPH_QUERY_FAILED", "Query execution failed", details={"reason": str(exc)})
 
 
-async def _handle_repos_command(session: Any, command: str) -> str:
+async def _handle_repos_command(session: Any, command: str) -> Dict[str, Any]:
     query = "MATCH (r:Repository) RETURN r.name as name ORDER BY r.name"
     result = await session.run(query)
     repos: list[str] = []
     async for record in result:
         repos.append(record["name"])
-    return json.dumps(
-        {
-            "success": True,
-            "command": command,
-            "data": {"repositories": repos},
-            "metadata": {"total_results": len(repos), "limited": False},
-        },
-        indent=2,
-    )
+    return {
+        "command": command,
+        "repositories": repos,
+        "metadata": {"total_results": len(repos), "limited": False},
+    }
 
 
-async def _handle_explore_command(session: Any, command: str, repo_name: str) -> str:
+async def _handle_explore_command(session: Any, command: str, repo_name: str) -> Dict[str, Any]:
     repo_check_query = "MATCH (r:Repository {name: $repo_name}) RETURN r.name as name"
     result = await session.run(repo_check_query, repo_name=repo_name)
     repo_record = await result.single()
     if not repo_record:
-        return json.dumps(
-            {"success": False, "command": command, "error": f"Repository '{repo_name}' not found in knowledge graph"},
-            indent=2,
-        )
+        raise ValueError(f"Repository '{repo_name}' not found in knowledge graph")
 
     files_query = """
     MATCH (r:Repository {name: $repo_name})-[:CONTAINS]->(f:File)
@@ -249,26 +226,19 @@ async def _handle_explore_command(session: Any, command: str, repo_name: str) ->
     result = await session.run(methods_query, repo_name=repo_name)
     method_count = (await result.single())["method_count"]
 
-    return json.dumps(
-        {
-            "success": True,
-            "command": command,
-            "data": {
-                "repository": repo_name,
-                "statistics": {
-                    "files": file_count,
-                    "classes": class_count,
-                    "functions": function_count,
-                    "methods": method_count,
-                },
-            },
-            "metadata": {"total_results": 1, "limited": False},
+    return {
+        "command": command,
+        "repository": repo_name,
+        "statistics": {
+            "files": file_count,
+            "classes": class_count,
+            "functions": function_count,
+            "methods": method_count,
         },
-        indent=2,
-    )
+    }
 
 
-async def _handle_classes_command(session: Any, command: str, repo_name: Optional[str]) -> str:
+async def _handle_classes_command(session: Any, command: str, repo_name: Optional[str]) -> Dict[str, Any]:
     limit = 20
     if repo_name:
         query = """
@@ -291,18 +261,15 @@ async def _handle_classes_command(session: Any, command: str, repo_name: Optiona
     async for record in result:
         classes.append({"name": record["name"], "full_name": record["full_name"]})
 
-    return json.dumps(
-        {
-            "success": True,
-            "command": command,
-            "data": {"classes": classes, "repository_filter": repo_name},
-            "metadata": {"total_results": len(classes), "limited": len(classes) >= limit},
-        },
-        indent=2,
-    )
+    return {
+        "command": command,
+        "classes": classes,
+        "repository_filter": repo_name,
+        "metadata": {"total_results": len(classes), "limited": len(classes) >= limit},
+    }
 
 
-async def _handle_class_command(session: Any, command: str, class_name: str) -> str:
+async def _handle_class_command(session: Any, command: str, class_name: str) -> Dict[str, Any]:
     class_query = """
     MATCH (c:Class)
     WHERE c.name = $class_name OR c.full_name = $class_name
@@ -312,10 +279,7 @@ async def _handle_class_command(session: Any, command: str, class_name: str) -> 
     result = await session.run(class_query, class_name=class_name)
     class_record = await result.single()
     if not class_record:
-        return json.dumps(
-            {"success": False, "command": command, "error": f"Class '{class_name}' not found in knowledge graph"},
-            indent=2,
-        )
+        raise ValueError(f"Class '{class_name}' not found in knowledge graph")
 
     actual_name = class_record["name"]
     full_name = class_record["full_name"]
@@ -343,20 +307,20 @@ async def _handle_class_command(session: Any, command: str, class_name: str) -> 
     async for record in result:
         attributes.append({"name": record["name"], "type": record["type"] or "Any"})
 
-    return json.dumps(
-        {
-            "success": True,
-            "command": command,
-            "data": {"class": {"name": actual_name, "full_name": full_name, "methods": methods, "attributes": attributes}},
-            "metadata": {
-                "total_results": 1,
-                "methods_count": len(methods),
-                "attributes_count": len(attributes),
-                "limited": False,
-            },
+    return {
+        "command": command,
+        "class": {
+            "name": actual_name,
+            "full_name": full_name,
+            "methods": methods,
+            "attributes": attributes,
         },
-        indent=2,
-    )
+        "metadata": {
+            "total_results": 1,
+            "methods_count": len(methods),
+            "attributes_count": len(attributes),
+        },
+    }
 
 
 async def _handle_method_command(
@@ -364,7 +328,7 @@ async def _handle_method_command(
     command: str,
     method_name: str,
     class_name: Optional[str],
-) -> str:
+) -> Dict[str, Any]:
     if class_name:
         query = """
         MATCH (c:Class)-[:HAS_METHOD]->(m:Method)
@@ -403,23 +367,17 @@ async def _handle_method_command(
 
     if not methods:
         suffix = f" in class '{class_name}'" if class_name else ""
-        return json.dumps(
-            {"success": False, "command": command, "error": f"Method '{method_name}'{suffix} not found"},
-            indent=2,
-        )
+        raise ValueError(f"Method '{method_name}'{suffix} not found")
 
-    return json.dumps(
-        {
-            "success": True,
-            "command": command,
-            "data": {"methods": methods, "class_filter": class_name},
-            "metadata": {"total_results": len(methods), "limited": len(methods) >= 20 and not class_name},
-        },
-        indent=2,
-    )
+    return {
+        "command": command,
+        "methods": methods,
+        "class_filter": class_name,
+        "metadata": {"total_results": len(methods), "limited": len(methods) >= 20 and not class_name},
+    }
 
 
-async def _handle_query_command(session: Any, command: str, cypher_query: str) -> str:
+async def _handle_query_command(session: Any, command: str, cypher_query: str) -> Dict[str, Any]:
     try:
         result = await session.run(cypher_query)
         records = []
@@ -429,56 +387,44 @@ async def _handle_query_command(session: Any, command: str, cypher_query: str) -
             count += 1
             if count >= 20:
                 break
-        return json.dumps(
-            {
-                "success": True,
-                "command": command,
-                "data": {"query": cypher_query, "results": records},
-                "metadata": {"total_results": len(records), "limited": len(records) >= 20},
-            },
-            indent=2,
-        )
+        return {
+            "command": command,
+            "query": cypher_query,
+            "results": records,
+            "metadata": {"total_results": len(records), "limited": len(records) >= 20},
+        }
     except Exception as exc:
-        return json.dumps(
-            {
-                "success": False,
-                "command": command,
-                "error": f"Cypher query error: {exc}",
-                "data": {"query": cypher_query},
-            },
-            indent=2,
-        )
+        raise RuntimeError(f"Cypher query error: {exc}") from exc
 
 
 async def parse_github_repository(ctx: Context, repo_url: str) -> str:
+    tool_name = "parse_github_repository"
     try:
         if os.getenv("USE_KNOWLEDGE_GRAPH", "false") != "true":
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "Knowledge graph functionality is disabled. Set USE_KNOWLEDGE_GRAPH=true in environment.",
-                },
-                indent=2,
+            return error_response(
+                "KNOWLEDGE_GRAPH_DISABLED",
+                "Knowledge graph functionality is disabled. Set USE_KNOWLEDGE_GRAPH=true in environment.",
             )
 
         repo_extractor = ctx.request_context.lifespan_context.repo_extractor
         if not repo_extractor:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "Repository extractor not available. Check Neo4j configuration in environment variables.",
-                },
-                indent=2,
+            return error_response(
+                "NEO4J_UNAVAILABLE",
+                "Repository extractor not available. Check Neo4j configuration in environment variables.",
             )
 
         validation = validate_github_url(repo_url)
         if not validation["valid"]:
-            return json.dumps({"success": False, "repo_url": repo_url, "error": validation["error"]}, indent=2)
+            return error_response(
+                "INVALID_INPUT",
+                "Invalid repository URL",
+                details={"repo_url": repo_url, "reason": validation["error"]},
+            )
 
         repo_name = validation["repo_name"]
-        print(f"Starting repository analysis for: {repo_name}")
+        log_info(tool_name, "analysis_start", repo=repo_name)
         await repo_extractor.analyze_repository(repo_url)
-        print(f"Repository analysis completed for: {repo_name}")
+        log_info(tool_name, "analysis_complete", repo=repo_name)
 
         async with repo_extractor.driver.session() as session:
             stats_query = """
@@ -520,21 +466,18 @@ async def parse_github_repository(ctx: Context, repo_url: str) -> str:
                     "sample_modules": record["sample_modules"] or [],
                 }
             else:
-                return json.dumps(
-                    {
-                        "success": False,
-                        "repo_url": repo_url,
-                        "error": f"Repository '{repo_name}' not found in database after parsing",
-                    },
-                    indent=2,
+                return error_response(
+                    "REPO_NOT_FOUND",
+                    f"Repository '{repo_name}' not found in database after parsing",
+                    details={"repo_url": repo_url},
                 )
 
-        return json.dumps(
-            {
-                "success": True,
+        log_info(tool_name, "completed", repo=repo_name)
+        return success_response(
+            f"Successfully parsed repository '{repo_name}'",
+            data={
                 "repo_url": repo_url,
                 "repo_name": repo_name,
-                "message": f"Successfully parsed repository '{repo_name}' into knowledge graph",
                 "statistics": stats,
                 "ready_for_validation": True,
                 "next_steps": [
@@ -543,10 +486,14 @@ async def parse_github_repository(ctx: Context, repo_url: str) -> str:
                     "The knowledge graph contains classes, methods, and functions from this repository",
                 ],
             },
-            indent=2,
         )
     except Exception as exc:
-        return json.dumps({"success": False, "repo_url": repo_url, "error": f"Repository parsing failed: {exc}"}, indent=2)
+        log_error(tool_name, "failed", repo_url=repo_url, error=str(exc))
+        return error_response(
+            "REPO_PARSE_FAILED",
+            "Repository parsing failed",
+            details={"repo_url": repo_url, "reason": str(exc)},
+        )
 
 
 def register_knowledge_graph_tools(mcp: FastMCP) -> None:

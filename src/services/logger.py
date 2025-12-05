@@ -10,6 +10,12 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
+# Silence noisy third-party loggers like neo4j notifications
+logging.getLogger("neo4j").setLevel(max(logging.WARNING, getattr(logging, LOG_LEVEL, logging.INFO)))
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+logging.getLogger("neo4j").propagate = False
+logging.getLogger("neo4j.notifications").propagate = False
+
 LOGGER = logging.getLogger("mcp_rag")
 
 

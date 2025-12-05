@@ -1,9 +1,5 @@
 """
 MCP server for web crawling with Crawl4AI.
-
-This server provides tools to crawl websites using Crawl4AI, automatically detecting
-the appropriate crawl method based on URL type (sitemap, txt file, or regular webpage).
-Also includes AI hallucination detection and repository parsing tools using Neo4j knowledge graphs.
 """
 from pathlib import Path
 

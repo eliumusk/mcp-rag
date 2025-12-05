@@ -13,6 +13,10 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from supabase import Client
 
+project_root = Path(__file__).resolve().parent.parent
+dotenv_path = project_root / ".env"
+load_dotenv(dotenv_path, override=True)
+
 from utils import get_supabase_client
 
 # Ensure knowledge_graphs is importable when running from src/
@@ -22,11 +26,6 @@ if str(knowledge_graphs_path) not in sys.path:
 
 from knowledge_graph_validator import KnowledgeGraphValidator
 from parse_repo_into_neo4j import DirectNeo4jExtractor
-
-
-project_root = Path(__file__).resolve().parent.parent
-dotenv_path = project_root / ".env"
-load_dotenv(dotenv_path, override=True)
 
 
 def format_neo4j_error(error: Exception) -> str:
