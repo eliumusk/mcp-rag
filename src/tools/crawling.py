@@ -5,11 +5,13 @@ from typing import Any, Dict, List, Tuple
 import asyncio
 import concurrent.futures
 from collections import deque
+import time
 import os
 import re
 from urllib.parse import urljoin, urlparse, urldefrag
 from xml.etree import ElementTree
 
+import httpx
 import requests
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -65,7 +67,7 @@ def _build_proxy_url(target_url: str) -> str:
 
 LINKS_MARKER = "Links/Buttons:"
 
-def fetch_with_jina(target_url: str, *, include_links: bool = False) -> str:
+async def fetch_with_jina(target_url: str, *, include_links: bool = False) -> str:
     proxy_url = _build_proxy_url(target_url)
     headers = {"User-Agent": HTML_USER_AGENT}
     if JINA_API_KEY:
@@ -73,16 +75,17 @@ def fetch_with_jina(target_url: str, *, include_links: bool = False) -> str:
     if include_links:
         headers["X-With-Links-Summary"] = "true"
         headers["X-Retain-Images"] = "none"
-
-    resp = requests.get(proxy_url, headers=headers, timeout=REQUEST_TIMEOUT)
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
+        resp = await client.get(proxy_url, headers=headers)
     if resp.status_code != 200:
         log_error("crawling", "jina_fetch_failed", url=target_url, status=resp.status_code)
         raise RuntimeError(f"Jina fetch failed for {target_url}: HTTP {resp.status_code}")
     return resp.text
 
 
-def fetch_direct_content(target_url: str) -> str:
-    resp = requests.get(target_url, headers={"User-Agent": HTML_USER_AGENT}, timeout=REQUEST_TIMEOUT)
+async def fetch_direct_content(target_url: str) -> str:
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
+        resp = await client.get(target_url, headers={"User-Agent": HTML_USER_AGENT})
     resp.raise_for_status()
     return resp.text
 
@@ -121,12 +124,12 @@ def _parse_links_summary(markdown_text: str) -> Tuple[str, List[str]]:
     return body, ordered_urls
 
 
-def fetch_content_with_fallback(target_url: str, include_links: bool = False) -> Tuple[str, List[str]]:
+async def fetch_content_with_fallback(target_url: str, include_links: bool = False) -> Tuple[str, List[str]]:
     try:
-        content = fetch_with_jina(target_url, include_links=include_links)
+        content = await fetch_with_jina(target_url, include_links=include_links)
     except Exception as exc:
         log_warning("crawling", "proxy_fetch_failed", url=target_url, error=str(exc))
-        direct = fetch_direct_content(target_url)
+        direct = await fetch_direct_content(target_url)
         return direct, []
 
     if include_links:
@@ -136,8 +139,7 @@ def fetch_content_with_fallback(target_url: str, include_links: bool = False) ->
 
 
 async def fetch_markdown(target_url: str, include_links: bool = False) -> Tuple[str, List[str]]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, fetch_content_with_fallback, target_url, include_links)
+    return await fetch_content_with_fallback(target_url, include_links=include_links)
 
 
 async def crawl_markdown_file(url: str) -> List[Dict[str, Any]]:
@@ -217,10 +219,13 @@ async def crawl_recursive_internal_links(
 async def crawl_single_page(ctx: Context, url: str, tenant_id: str | None = None) -> str:
     tool_name = "crawl_single_page"
     try:
+        overall_start = time.perf_counter()
         supabase_client = ctx.request_context.lifespan_context.supabase_client
         default_tenant = ctx.request_context.lifespan_context.tenant_id
         tenant = tenant_id or default_tenant
+        fetch_start = time.perf_counter()
         markdown, _ = await fetch_markdown(url)
+        fetch_ms = round((time.perf_counter() - fetch_start) * 1000, 2)
         if not markdown:
             return error_response("CRAWL_NO_CONTENT", "No content returned from target", details={"url": url})
 
@@ -249,6 +254,7 @@ async def crawl_single_page(ctx: Context, url: str, tenant_id: str | None = None
         url_to_full_document = {url: markdown}
         source_summary = extract_source_summary(source_id, markdown[:5000])
         update_source_info(supabase_client, source_id, source_summary, total_word_count, tenant_id=tenant)
+        store_start = time.perf_counter()
         add_documents_to_supabase(
             supabase_client,
             urls,
@@ -258,6 +264,7 @@ async def crawl_single_page(ctx: Context, url: str, tenant_id: str | None = None
             url_to_full_document,
             tenant_id=tenant,
         )
+        store_ms = round((time.perf_counter() - store_start) * 1000, 2)
 
         code_examples_stored = 0
         if os.getenv("USE_AGENTIC_RAG", "false") == "true":
@@ -299,6 +306,7 @@ async def crawl_single_page(ctx: Context, url: str, tenant_id: str | None = None
                 )
                 code_examples_stored = len(code_examples)
 
+        duration_ms = round((time.perf_counter() - overall_start) * 1000, 2)
         log_info(
             tool_name,
             "completed",
@@ -306,6 +314,9 @@ async def crawl_single_page(ctx: Context, url: str, tenant_id: str | None = None
             source_id=source_id,
             chunks=len(chunks),
             code_examples=code_examples_stored,
+            duration_ms=duration_ms,
+            fetch_ms=fetch_ms,
+            store_ms=store_ms,
         )
         return success_response(
             "Page crawled successfully",
@@ -331,8 +342,10 @@ async def smart_crawl_url(
     chunk_size: int = 5000,
     tenant_id: str | None = None,
 ) -> str:
+    """Crawl a site with limited BFS. Prefer crawl_single_page unless user explicitly requests multi-page ingestion."""
     tool_name = "smart_crawl_url"
     try:
+        overall_start = time.perf_counter()
         supabase_client = ctx.request_context.lifespan_context.supabase_client
         default_tenant = ctx.request_context.lifespan_context.tenant_id
         tenant = tenant_id or default_tenant
@@ -399,6 +412,7 @@ async def smart_crawl_url(
             update_source_info(supabase_client, source_id, summary, word_count, tenant_id=tenant)
 
         batch_size = 20
+        store_start = time.perf_counter()
         add_documents_to_supabase(
             supabase_client,
             urls,
@@ -409,6 +423,7 @@ async def smart_crawl_url(
             batch_size=batch_size,
             tenant_id=tenant,
         )
+        store_ms = round((time.perf_counter() - store_start) * 1000, 2)
 
         code_examples: List[str] = []
         if os.getenv("USE_AGENTIC_RAG", "false") == "true":
@@ -458,6 +473,7 @@ async def smart_crawl_url(
                     tenant_id=tenant,
                 )
 
+        duration_ms = round((time.perf_counter() - overall_start) * 1000, 2)
         log_info(
             tool_name,
             "completed",
@@ -466,6 +482,8 @@ async def smart_crawl_url(
             pages=len(crawl_results),
             chunks=chunk_count,
             code_examples=len(code_examples),
+            duration_ms=duration_ms,
+            store_ms=store_ms,
         )
         return success_response(
             "Smart crawl completed",

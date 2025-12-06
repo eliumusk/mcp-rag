@@ -710,7 +710,7 @@ def search_documents(
         return []
 
 
-def extract_code_blocks(markdown_content: str, min_length: int = 1000) -> List[Dict[str, Any]]:
+def extract_code_blocks(markdown_content: str, min_length: int = 100) -> List[Dict[str, Any]]:
     """
     Extract code blocks from markdown content along with context.
     
@@ -771,11 +771,11 @@ def extract_code_blocks(markdown_content: str, min_length: int = 1000) -> List[D
             continue
         
         # Extract context before (1000 chars)
-        context_start = max(0, start_pos - 1000)
+        context_start = max(0, start_pos - 100)
         context_before = markdown_content[context_start:start_pos].strip()
         
         # Extract context after (1000 chars)
-        context_end = min(len(markdown_content), end_pos + 3 + 1000)
+        context_end = min(len(markdown_content), end_pos + 3 + 100)
         context_after = markdown_content[end_pos + 3:context_end].strip()
         
         code_blocks.append({
@@ -903,7 +903,12 @@ def add_code_examples_to_supabase(
             
             # Extract source_id from URL
             parsed_url = urlparse(urls[idx])
-            source_id = parsed_url.netloc or parsed_url.path
+            meta_source = None
+            try:
+                meta_source = metadatas[idx].get("source")
+            except Exception:
+                meta_source = None
+            source_id = meta_source or parsed_url.netloc or parsed_url.path
             
             batch_data.append({
                 'url': urls[idx],

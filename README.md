@@ -137,6 +137,7 @@ The tool expands globs/directories, reads text (PDF support requires `pip instal
 
 5. Create a `.env` file based on the configuration section below
    - Ensure you set `TENANT_ID` to a unique value (e.g., your org name) so Supabase rows are namespaced.
+   - 客户端也可以在每次 MCP 请求里带上 `X-Tenant-ID`（或 `TENANT_HEADER_NAME` 指定的 header），服务器会自动使用该值把数据写入对应租户，无需重启。
 
 ## Database Setup
 
@@ -236,6 +237,9 @@ Create a `.env` file in the project root with the following variables:
 HOST=0.0.0.0
 PORT=8051
 TRANSPORT=sse
+TENANT_ID=default
+# Optional: override the HTTP header name clients can send to pin a tenant
+TENANT_HEADER_NAME=X-Tenant-ID
 
 # Embedding Configuration (Jina)
 JINA_API_KEY=your_jina_api_key
