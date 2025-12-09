@@ -1,78 +1,56 @@
-<h1 align="center">Crawl4AI RAG MCP Server</h1>
+<h1 align="center">智能 RAG MCP 服务器</h1>
 
 <p align="center">
-  <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
+  <em>为 AI 助手提供网页抓取和 RAG 检索能力</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Jina](https://jina.ai) fetching proxies and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
+基于 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 实现的智能服务器，集成了 [Jina](https://jina.ai) 和 [Supabase](https://supabase.com/)，为 AI 助手提供强大的网页抓取和 RAG 检索能力。
 
-With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
+使用这个 MCP 服务器，你可以**抓取任何内容**，然后**在任何地方使用这些知识**进行 RAG 检索。
 
-The primary goal is to bring this MCP server into [Archon](https://github.com/coleam00/Archon) as I evolve it to be more of a knowledge engine for AI coding assistants to build AI agents. This first version of the Crawl4AI/RAG MCP server will be improved upon greatly soon, especially making it more configurable so you can use different embedding models and run everything locally with Ollama.
+## 概述
 
-Consider this GitHub repository a testbed, hence why I haven't been super actively address issues and pull requests yet. I certainly will though as I bring this into Archon V2!
+本服务器提供了一套工具，让 AI 助手能够抓取网站内容、将内容存储到向量数据库（Supabase）中，并对抓取的内容执行 RAG 检索。
 
-## Overview
+服务器包含多种高级 RAG 策略，可以按需启用以提升检索质量：
+- **上下文嵌入**：增强语义理解
+- **混合搜索**：结合向量搜索和关键词搜索
+- **智能代码提取**：专门提取和检索代码示例
+- **重排序**：使用交叉编码器模型提升结果相关性
+- **知识图谱**：检测 AI 幻觉并分析代码仓库
 
-This MCP server provides tools that enable AI agents to crawl websites, store content in a vector database (Supabase), and perform RAG over the crawled content. It follows the best practices for building MCP servers based on the [Mem0 MCP server template](https://github.com/coleam00/mcp-mem0/) I provided on my channel previously.
+详细配置方法请参考下方的[配置章节](#配置)。
 
-The server includes several advanced RAG strategies that can be enabled to enhance retrieval quality:
-- **Contextual Embeddings** for enriched semantic understanding
-- **Hybrid Search** combining vector and keyword search
-- **Agentic RAG** for specialized code example extraction
-- **Reranking** for improved result relevance using cross-encoder models
-- **Knowledge Graph** for AI hallucination detection and repository code analysis
+## 核心功能
 
-See the [Configuration section](#configuration) below for details on how to enable and configure these strategies.
+- **智能 URL 识别**：自动检测和处理不同类型的 URL（网页、站点地图、文本文件）
+- **递归抓取**：跟随内部链接发现内容
+- **并行处理**：高效地同时抓取多个页面
+- **智能分块**：按标题和大小智能分割内容
+- **向量搜索**：对抓取的内容执行 RAG 检索，可按数据源过滤
+- **源管理**：检索可用的数据源以指导 RAG 过程
 
-## Vision
+## 工具列表
 
-The Crawl4AI RAG MCP server is just the beginning. Here's where we're headed:
+### 核心工具（始终可用）
 
-1. **Integration with Archon**: Building this system directly into [Archon](https://github.com/coleam00/Archon) to create a comprehensive knowledge engine for AI coding assistants to build better AI agents.
+1. **`crawl_single_page`**：快速抓取单个网页并存储到向量数据库
+2. **`smart_crawl_url`**：智能抓取整个网站（支持站点地图、llms-full.txt 或递归抓取普通网页）
+3. **`get_available_sources`**：获取数据库中所有可用的数据源（域名）列表
+4. **`perform_rag_query`**：使用语义搜索查找相关内容，可选择按源过滤
+5. **`ingest_local_files`**：直接读取本地 Markdown/文本/PDF 文件，分块后推送到 Supabase
 
-2. **Multiple Embedding Models**: Expanding beyond OpenAI to support a variety of embedding models, including the ability to run everything locally with Ollama for complete control and privacy.
+### 条件工具
 
-3. **Advanced RAG Strategies**: Implementing sophisticated retrieval techniques like contextual retrieval, late chunking, and others to move beyond basic "naive lookups" and significantly enhance the power and precision of the RAG system, especially as it integrates with Archon.
+6. **`search_code_examples`**（需要 `USE_AGENTIC_RAG=true`）：专门搜索代码示例及其摘要
 
-4. **Enhanced Chunking Strategy**: Implementing a Context 7-inspired chunking approach that focuses on examples and creates distinct, semantically meaningful sections for each chunk, improving retrieval precision.
+### 知识图谱工具（需要 `USE_KNOWLEDGE_GRAPH=true`）
 
-5. **Performance Optimization**: Increasing crawling and indexing speed to make it more realistic to "quickly" index new documentation to then leverage it within the same prompt in an AI coding assistant.
+7. **`parse_github_repository`**：将 GitHub 仓库解析为 Neo4j 知识图谱
+8. **`check_ai_script_hallucinations`**：分析 Python 脚本，检测 AI 幻觉
+9. **`query_knowledge_graph`**：探索和查询 Neo4j 知识图谱
 
-## Features
-
-- **Smart URL Detection**: Automatically detects and handles different URL types (regular webpages, sitemaps, text files)
-- **Recursive Crawling**: Follows internal links to discover content
-- **Parallel Processing**: Efficiently crawls multiple pages simultaneously
-- **Content Chunking**: Intelligently splits content by headers and size for better processing
-- **Vector Search**: Performs RAG over crawled content, optionally filtering by data source for precision
-- **Source Retrieval**: Retrieve sources available for filtering to guide the RAG process
-
-## Tools
-
-The server provides essential web crawling and search tools:
-
-### Core Tools (Always Available)
-
-1. **`crawl_single_page`**: Quickly crawl a single web page and store its content in the vector database
-2. **`smart_crawl_url`**: Intelligently crawl a full website based on the type of URL provided (sitemap, llms-full.txt, or a regular webpage that needs to be crawled recursively)
-3. **`get_available_sources`**: Get a list of all available sources (domains) in the database
-4. **`perform_rag_query`**: Search for relevant content using semantic search with optional source filtering
-5. **`ingest_local_files`**: Read Markdown/text/PDF files directly from disk (or glob patterns/directories), chunk them, and push into Supabase without hosting them anywhere
-
-### Conditional Tools
-
-6. **`search_code_examples`** (requires `USE_AGENTIC_RAG=true`): Search specifically for code examples and their summaries from crawled documentation. This tool provides targeted code snippet retrieval for AI coding assistants.
-
-### Knowledge Graph Tools (requires `USE_KNOWLEDGE_GRAPH=true`, see below)
-
-7. **`parse_github_repository`**: Parse a GitHub repository into a Neo4j knowledge graph, extracting classes, methods, functions, and their relationships for hallucination detection
-8. **`check_ai_script_hallucinations`**: Analyze Python scripts for AI hallucinations by validating imports, method calls, and class usage against the knowledge graph
-9. **`query_knowledge_graph`**: Explore and query the Neo4j knowledge graph with commands like `repos`, `classes`, `methods`, and custom Cypher queries
-
-### Local File Ingestion
-
-Use `ingest_local_files` when you already have Markdown/text/PDF documents locally and want to skip crawling:
+### 本地文件导入示例
 
 ```json
 {
@@ -82,264 +60,238 @@ Use `ingest_local_files` when you already have Markdown/text/PDF documents local
 }
 ```
 
-The tool expands globs/directories, reads text (PDF support requires `pip install pypdf`), chunks with the same logic as the crawler, and pushes results—including optional code examples—into Supabase.
+## 前置要求
 
-## Prerequisites
+- [Docker/Docker Desktop](https://www.docker.com/products/docker-desktop/)（推荐使用容器运行）
+- [Python 3.12+](https://www.python.org/downloads/)（直接运行需要）
+- [Supabase](https://supabase.com/) 账号（用于 RAG 数据库）
+- [Jina AI API key](https://jina.ai/embeddings/)（用于嵌入和重排序）
+- 任何兼容 OpenAI 的 LLM 端点（如 OpenRouter、Groq、Together）
+- [Neo4j](https://neo4j.com/)（可选，用于知识图谱功能）
 
-- [Docker/Docker Desktop](https://www.docker.com/products/docker-desktop/) if running the MCP server as a container (recommended)
-- [Python 3.12+](https://www.python.org/downloads/) if running the MCP server directly through uv
-- [Supabase](https://supabase.com/) (database for RAG)
-- [Jina AI API key](https://jina.ai/embeddings/) (for embeddings and optional reranking)
-- Any OpenAI-compatible LLM endpoint (e.g., OpenRouter, Groq, Together); configure its API key/base via `LLM_API_KEY` / `LLM_API_BASE`
-- [Neo4j](https://neo4j.com/) (optional, for knowledge graph functionality) - see [Knowledge Graph Setup](#knowledge-graph-setup) section
+## 安装
 
-## Installation
+### 方式一：使用 Docker（推荐）
 
-### Using Docker (Recommended)
-
-1. Clone this repository:
+1. 克隆仓库：
    ```bash
-   git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
-   cd mcp-crawl4ai-rag
+   git clone <your-repo-url>
+   cd mcp-rag
    ```
 
-2. Build the Docker image:
+2. 构建 Docker 镜像：
    ```bash
-   docker build -t mcp/crawl4ai-rag --build-arg PORT=8051 .
+   docker build -t mcp/rag-server --build-arg PORT=8051 .
    ```
 
-3. Create a `.env` file based on the configuration section below
+3. 根据下方配置章节创建 `.env` 文件
 
-### Using uv directly (no Docker)
+### 方式二：直接使用 uv
 
-1. Clone this repository:
+1. 克隆仓库：
    ```bash
-   git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
-   cd mcp-crawl4ai-rag
+   git clone <your-repo-url>
+   cd mcp-rag
    ```
 
-2. Install uv if you don't have it:
+2. 安装 uv：
    ```bash
    pip install uv
    ```
 
-3. Create and activate a virtual environment:
+3. 创建并激活虚拟环境：
    ```bash
    uv venv
-   .venv\Scripts\activate
-   # on Mac/Linux: source .venv/bin/activate
+   # Windows: .venv\Scripts\activate
+   # Mac/Linux: source .venv/bin/activate
    ```
 
-4. Install dependencies:
+4. 安装依赖：
    ```bash
    uv pip install -e .
    ```
 
-5. Create a `.env` file based on the configuration section below
-   - Ensure you set `TENANT_ID` to a unique value (e.g., your org name) so Supabase rows are namespaced.
-   - 客户端也可以在每次 MCP 请求里带上 `X-Tenant-ID`（或 `TENANT_HEADER_NAME` 指定的 header），服务器会自动使用该值把数据写入对应租户，无需重启。
+5. 创建 `.env` 文件
+   - 设置 `TENANT_ID` 为唯一值（如组织名称）以隔离 Supabase 数据
+   - 客户端可在每次 MCP 请求中携带 `X-Tenant-ID` header 来动态指定租户
 
-## Database Setup
+## 数据库设置
 
-Before running the server, you need to set up the database with the pgvector extension:
+运行服务器前，需要在 Supabase 中设置数据库：
 
-1. Go to the SQL Editor in your Supabase dashboard (create a new project first if necessary)
+1. 在 Supabase 控制台打开 SQL 编辑器（如需要先创建新项目）
 
-2. Create a new query and paste the contents of `crawled_pages.sql`
+2. 创建新查询并粘贴 `crawled_pages.sql` 的内容
 
-3. Run the query to create the necessary tables and functions
+3. 运行查询以创建必要的表和函数
 
-### Embedding Cache & Incremental Updates
+### 嵌入缓存与增量更新
 
-The default schema now adds:
+默认架构包含：
 
-- `content_hash`, `embedding_model`, and `embedding_cached_at` on both `crawled_pages` and `code_examples`
-- A dedicated `embedding_cache` table keyed by `(tenant_id, content_hash, model_name)` with a `needs_refresh` flag for asynchronous refresh workflows
+- `crawled_pages` 和 `code_examples` 表中的 `content_hash`、`embedding_model`、`embedding_cached_at` 字段
+- 专用的 `embedding_cache` 表，按 `(tenant_id, content_hash, model_name)` 键索引
 
-The crawler/ingestion tools will:
+抓取/导入工具会：
 
-1. Hash every chunk (or code example) before embedding.
-2. Look up reusable embeddings in `embedding_cache`. Cache hits skip the embedding API call entirely.
-3. Insert new embeddings back into the cache, namespaced by tenant and embedding version/model.
-4. Mark stale cache rows (`refreshed_at` older than `EMBEDDING_CACHE_TTL_SECONDS`) for asynchronous refresh by setting `needs_refresh=true`.
+1. 在嵌入前对每个块进行哈希
+2. 在 `embedding_cache` 中查找可复用的嵌入，命中缓存则跳过 API 调用
+3. 将新嵌入插入缓存，按租户和嵌入版本/模型隔离
+4. 标记过期缓存行（`refreshed_at` 超过 `EMBEDDING_CACHE_TTL_SECONDS`）以便异步刷新
 
-Configure cache behavior via the new environment variables:
+通过环境变量配置缓存行为：
 
 ```
-# Embedding cache
-EMBEDDING_VERSION=         # Optional friendly name for the embedding configuration (defaults to EMBEDDING_MODEL)
+EMBEDDING_VERSION=                  # 可选的嵌入配置名称（默认为 EMBEDDING_MODEL）
 EMBEDDING_CACHE_ENABLED=true
-EMBEDDING_CACHE_TTL_SECONDS=604800  # 7 days
+EMBEDDING_CACHE_TTL_SECONDS=604800  # 7 天
 ```
 
-When you upgrade embedding models, bump `EMBEDDING_VERSION` to force misses and repopulate the cache incrementally.
+升级嵌入模型时，更新 `EMBEDDING_VERSION` 以强制缓存失效并增量重新填充。
 
-### Smart Crawl Configuration
+### 智能抓取配置
 
-`smart_crawl_url` now relies on Jina 的 “Links/Buttons” 摘要来发现可遍历的内部链接。你可以通过环境变量控制最大遍历范围：
+`smart_crawl_url` 使用 Jina 的 “Links/Buttons” 摘要来发现可遍历的内部链接。可通过环境变量控制抓取范围：
 
 ```
 SMART_CRAWL_MAX_PAGES=30            # 单次深度抓取的最大页面数
-SMART_CRAWL_MAX_LINKS_PER_PAGE=20   # 每个页面最多取多少个 Links/Buttons 链接
+SMART_CRAWL_MAX_LINKS_PER_PAGE=20   # 每个页面最多提取的链接数
 ```
 
-抓取流程会把链接当成 BFS 队列（按域名去重），Jina 代理失败时自动退回直接请求，但此时无法获得链接列表，因此只会抓取起始页面。
+抓取流程使用 BFS 队列（按域名去重）。Jina 代理失败时自动回退到直接请求，但此时无法获得链接列表，因此只会抓取起始页面。
 
-## Knowledge Graph Setup (Optional)
+## 知识图谱设置（可选）
 
-To enable AI hallucination detection and repository analysis features, you need to set up Neo4j.
+要启用 AI 幻觉检测和仓库分析功能，需要设置 Neo4j。
 
-Also, the knowledge graph implementation isn't fully compatible with Docker yet, so I would recommend right now running directly through uv if you want to use the hallucination detection within the MCP server!
+**注意**：知识图谱功能目前与 Docker 不完全兼容，建议直接通过 uv 运行。
 
-For installing Neo4j:
+### 安装 Neo4j
 
-### Local AI Package (Recommended)
+**方式一：使用 Neo4j Desktop**
 
-The easiest way to get Neo4j running locally is with the [Local AI Package](https://github.com/coleam00/local-ai-packaged) - a curated collection of local AI services including Neo4j:
+1. 从 [neo4j.com/download](https://neo4j.com/download/) 下载 Neo4j Desktop
 
-1. **Clone the Local AI Package**:
-   ```bash
-   git clone https://github.com/coleam00/local-ai-packaged.git
-   cd local-ai-packaged
-   ```
+2. 创建新数据库：
+   - 打开 Neo4j Desktop
+   - 创建新项目和数据库
+   - 为 `neo4j` 用户设置密码
+   - 启动数据库
 
-2. **Start Neo4j**:
-   Follow the instructions in the Local AI Package repository to start Neo4j with Docker Compose
+3. 记录连接信息：
+   - URI: `bolt://localhost:7687`（默认）
+   - 用户名: `neo4j`（默认）
+   - 密码: 创建时设置的密码
 
-3. **Default connection details**:
-   - URI: `bolt://localhost:7687`
-   - Username: `neo4j`
-   - Password: Check the Local AI Package documentation for the default password
+**方式二：使用 Docker**
 
-### Manual Neo4j Installation
-
-Alternatively, install Neo4j directly:
-
-1. **Install Neo4j Desktop**: Download from [neo4j.com/download](https://neo4j.com/download/)
-
-2. **Create a new database**:
-   - Open Neo4j Desktop
-   - Create a new project and database
-   - Set a password for the `neo4j` user
-   - Start the database
-
-3. **Note your connection details**:
-   - URI: `bolt://localhost:7687` (default)
-   - Username: `neo4j` (default)
-   - Password: Whatever you set during creation
-
-## Configuration
-
-Create a `.env` file in the project root with the following variables:
-
+```bash
+docker run -d \
+  --name neo4j \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/your_password \
+  neo4j:latest
 ```
-# MCP Server Configuration
+
+## 配置
+
+在项目根目录创建 `.env` 文件，包含以下变量：
+
+```bash
+# MCP 服务器配置
 HOST=0.0.0.0
 PORT=8051
 TRANSPORT=sse
 TENANT_ID=default
-# Optional: override the HTTP header name clients can send to pin a tenant
 TENANT_HEADER_NAME=X-Tenant-ID
 
-# Embedding Configuration (Jina)
+# Jina 嵌入配置
 JINA_API_KEY=your_jina_api_key
 JINA_API_URL=https://api.jina.ai/v1/embeddings
 EMBEDDING_MODEL=jina-embeddings-v3
 JINA_EMBEDDING_TASK=text-matching
 EMBEDDING_DIM=1024
 
-# Optional Jina Rerank Configuration
+# Jina 重排序配置（可选）
 JINA_RERANK_URL=https://api.jina.ai/v1/rerank
 JINA_RERANK_MODEL=jina-reranker-v3
 
-# LLM for summaries/contextual embeddings (any OpenAI-compatible endpoint)
+# LLM 配置（用于摘要/上下文嵌入）
 MODEL_CHOICE=openrouter/anthropic/claude-3.5-haiku
 LLM_API_KEY=your_llm_key
 LLM_API_BASE=https://openrouter.ai/api/v1
 
-# RAG Strategies (set to "true" or "false", default to "false")
+# RAG 策略开关（设置为 "true" 或 "false"，默认为 "false"）
 USE_CONTEXTUAL_EMBEDDINGS=false
 USE_HYBRID_SEARCH=false
 USE_AGENTIC_RAG=false
 USE_RERANKING=false
 USE_KNOWLEDGE_GRAPH=false
 
-# Supabase Configuration
+# Supabase 配置
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_KEY=your_supabase_service_key
 
-# Neo4j Configuration (required for knowledge graph functionality)
+# Neo4j 配置（知识图谱功能需要）
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_neo4j_password
 ```
 
-### RAG Strategy Options
+### RAG 策略说明
 
-The Crawl4AI RAG MCP server supports four powerful RAG strategies that can be enabled independently:
+服务器支持五种 RAG 策略，可独立启用：
 
-#### 1. **USE_CONTEXTUAL_EMBEDDINGS**
-When enabled, this strategy enhances each chunk's embedding with additional context from the entire document. The system passes both the full document and the specific chunk to an LLM (configured via `MODEL_CHOICE`) to generate enriched context that gets embedded alongside the chunk content.
+#### 1. USE_CONTEXTUAL_EMBEDDINGS（上下文嵌入）
 
-- **When to use**: Enable this when you need high-precision retrieval where context matters, such as technical documentation where terms might have different meanings in different sections.
-- **Trade-offs**: Slower indexing due to LLM calls for each chunk, but significantly better retrieval accuracy.
-- **Cost**: Additional LLM API calls during indexing.
+为每个文本块添加整个文档的上下文信息，提升检索精度。
 
-#### 2. **USE_HYBRID_SEARCH**
-Combines traditional keyword search with semantic vector search to provide more comprehensive results. The system performs both searches in parallel and intelligently merges results, prioritizing documents that appear in both result sets.
+- **适用场景**：技术文档中术语在不同章节有不同含义时
+- **代价**：索引速度较慢，需额外 LLM API 调用
 
-- **When to use**: Enable this when users might search using specific technical terms, function names, or when exact keyword matches are important alongside semantic understanding.
-- **Trade-offs**: Slightly slower search queries but more robust results, especially for technical content.
-- **Cost**: No additional API costs, just computational overhead.
+#### 2. USE_HYBRID_SEARCH（混合搜索）
 
-#### 3. **USE_AGENTIC_RAG**
-Enables specialized code example extraction and storage. When crawling documentation, the system identifies code blocks (≥300 characters), extracts them with surrounding context, generates summaries, and stores them in a separate vector database table specifically designed for code search.
+结合向量搜索和关键词搜索，提供更全面的结果。
 
-- **When to use**: Essential for AI coding assistants that need to find specific code examples, implementation patterns, or usage examples from documentation.
-- **Trade-offs**: Significantly slower crawling due to code extraction and summarization, requires more storage space.
-- **Cost**: Additional LLM API calls for summarizing each code example.
-- **Benefits**: Provides a dedicated `search_code_examples` tool that AI agents can use to find specific code implementations.
+- **适用场景**：需要精确匹配技术术语、函数名时
+- **代价**：查询稍慢，但无额外 API 成本
 
-#### 4. **USE_RERANKING**
-Calls Jina's hosted reranker API to rescore results after initial retrieval. This yields better ranking without hosting a local cross-encoder.
+#### 3. USE_AGENTIC_RAG（智能代码提取）
 
-- **When to use**: Enable this when search precision is critical and you need the most relevant results at the top. Particularly useful for complex queries where semantic similarity alone might not capture query intent.
-- **Trade-offs**: Adds one external API call (~100-200ms depending on document count) but significantly improves ordering.
-- **Cost**: Pay-per-use on the Jina API (same key as embeddings). No local GPU/CPU load.
-- **Benefits**: Better result relevance, especially for complex queries. Works with both regular RAG search and code example search.
+专门提取和存储代码示例（≥300 字符），生成摘要并单独索引。
 
-#### 5. **USE_KNOWLEDGE_GRAPH**
-Enables AI hallucination detection and repository analysis using Neo4j knowledge graphs. When enabled, the system can parse GitHub repositories into a graph database and validate AI-generated code against real repository structures. (NOT fully compatible with Docker yet, I'd recommend running through uv)
+- **适用场景**：AI 编程助手需要查找代码示例和实现模式时
+- **代价**：抓取速度显著变慢，需额外 LLM API 调用
 
-- **When to use**: Enable this for AI coding assistants that need to validate generated code against real implementations, or when you want to detect when AI models hallucinate non-existent methods, classes, or incorrect usage patterns.
-- **Trade-offs**: Requires Neo4j setup and additional dependencies. Repository parsing can be slow for large codebases, and validation requires repositories to be pre-indexed.
-- **Cost**: No additional API costs for validation, but requires Neo4j infrastructure (can use free local installation or cloud AuraDB).
-- **Benefits**: Provides three powerful tools: `parse_github_repository` for indexing codebases, `check_ai_script_hallucinations` for validating AI-generated code, and `query_knowledge_graph` for exploring indexed repositories.
+#### 4. USE_RERANKING（重排序）
 
-You can now tell the AI coding assistant to add a Python GitHub repository to the knowledge graph like:
+使用 Jina 重排序 API 对初始检索结果重新评分。
 
-"Add https://github.com/pydantic/pydantic-ai.git to the knowledge graph"
+- **适用场景**：搜索精度至关重要时
+- **代价**：每次查询增加一次 API 调用（~100-200ms）
 
-Make sure the repo URL ends with .git.
+#### 5. USE_KNOWLEDGE_GRAPH（知识图谱）
 
-You can also have the AI coding assistant check for hallucinations with scripts it just created, or you can manually run the command:
+使用 Neo4j 知识图谱检测 AI 幻觉并分析代码仓库。
 
-```
-python knowledge_graphs/ai_hallucination_detector.py [full path to your script to analyze]
-```
+- **适用场景**：需要验证 AI 生成的代码是否符合真实仓库结构时
+- **代价**：需要 Neo4j 基础设施，大型代码库解析较慢
+- **注意**：目前与 Docker 不完全兼容，建议通过 uv 运行
 
-### Recommended Configurations
+### 推荐配置
 
-**For general documentation RAG:**
-```
+**通用文档 RAG：**
+
+```bash
 USE_CONTEXTUAL_EMBEDDINGS=false
 USE_HYBRID_SEARCH=true
 USE_AGENTIC_RAG=false
 USE_RERANKING=true
 ```
 
-**For AI coding assistant with code examples:**
-```
+**AI 编程助手（含代码示例）：**
+
+```bash
 USE_CONTEXTUAL_EMBEDDINGS=true
 USE_HYBRID_SEARCH=true
 USE_AGENTIC_RAG=true
@@ -347,8 +299,9 @@ USE_RERANKING=true
 USE_KNOWLEDGE_GRAPH=false
 ```
 
-**For AI coding assistant with hallucination detection:**
-```
+**AI 编程助手（含幻觉检测）：**
+
+```bash
 USE_CONTEXTUAL_EMBEDDINGS=true
 USE_HYBRID_SEARCH=true
 USE_AGENTIC_RAG=true
@@ -356,8 +309,9 @@ USE_RERANKING=true
 USE_KNOWLEDGE_GRAPH=true
 ```
 
-**For fast, basic RAG:**
-```
+**快速基础 RAG：**
+
+```bash
 USE_CONTEXTUAL_EMBEDDINGS=false
 USE_HYBRID_SEARCH=true
 USE_AGENTIC_RAG=false
@@ -365,32 +319,32 @@ USE_RERANKING=false
 USE_KNOWLEDGE_GRAPH=false
 ```
 
-## Running the Server
+## 运行服务器
 
-### Using Docker
+### 使用 Docker
 
 ```bash
-docker run --env-file .env -p 8051:8051 mcp/crawl4ai-rag
+docker run --env-file .env -p 8051:8051 mcp/rag-server
 ```
 
-### Using Python
+### 使用 Python
 
 ```bash
 uv run src/rag_mcp.py
 ```
 
-The server will start and listen on the configured host and port.
+服务器将在配置的主机和端口上启动。
 
-## Integration with MCP Clients
+## 集成到 MCP 客户端
 
-### SSE Configuration
+### SSE 配置
 
-Once you have the server running with SSE transport, you can connect to it using this configuration:
+服务器运行后，可使用以下配置连接：
 
 ```json
 {
   "mcpServers": {
-    "crawl4ai-rag": {
+    "rag-server": {
       "transport": "sse",
       "url": "http://localhost:8051/sse"
     }
@@ -398,130 +352,97 @@ Once you have the server running with SSE transport, you can connect to it using
 }
 ```
 
-> **Note for Windsurf users**: Use `serverUrl` instead of `url` in your configuration:
-> ```json
-> {
->   "mcpServers": {
->     "crawl4ai-rag": {
->       "transport": "sse",
->       "serverUrl": "http://localhost:8051/sse"
->     }
->   }
-> }
-> ```
->
-> **Note for Docker users**: Use `host.docker.internal` instead of `localhost` if your client is running in a different container. This will apply if you are using this MCP server within n8n!
+**注意事项：**
 
-> **Note for Claude Code users**: 
-```
-claude mcp add-json crawl4ai-rag '{"type":"http","url":"http://localhost:8051/sse"}' --scope user
+- **Windsurf 用户**：使用 `serverUrl` 而非 `url`
+- **Docker 用户**：如果客户端在不同容器中运行，使用 `host.docker.internal` 代替 `localhost`
+- **Claude Code 用户**：
+
+```bash
+claude mcp add-json rag-server '{"type":"http","url":"http://localhost:8051/sse"}' --scope user
 ```
 
-### Stdio Configuration
+### Stdio 配置
 
-Add this server to your MCP configuration for Claude Desktop, Windsurf, or any other MCP client:
+在 Claude Desktop、Windsurf 或其他 MCP 客户端中添加配置：
 
 ```json
 {
   "mcpServers": {
-    "crawl4ai-rag": {
+    "rag-server": {
       "command": "python",
-      "args": ["path/to/crawl4ai-mcp/src/rag_mcp.py"],
+      "args": ["path/to/src/rag_mcp.py"],
       "env": {
         "TRANSPORT": "stdio",
         "JINA_API_KEY": "your_jina_api_key",
         "LLM_API_KEY": "your_llm_api_key",
         "LLM_API_BASE": "https://openrouter.ai/api/v1",
         "SUPABASE_URL": "your_supabase_url",
-        "SUPABASE_SERVICE_KEY": "your_supabase_service_key",
-        "USE_KNOWLEDGE_GRAPH": "false",
-        "NEO4J_URI": "bolt://localhost:7687",
-        "NEO4J_USER": "neo4j",
-        "NEO4J_PASSWORD": "your_neo4j_password"
+        "SUPABASE_SERVICE_KEY": "your_supabase_service_key"
       }
     }
   }
 }
 ```
 
-### Docker with Stdio Configuration
+### Docker Stdio 配置
 
 ```json
 {
   "mcpServers": {
-    "crawl4ai-rag": {
+    "rag-server": {
       "command": "docker",
-      "args": ["run", "--rm", "-i", 
-               "-e", "TRANSPORT", 
-               "-e", "JINA_API_KEY", 
-               "-e", "LLM_API_KEY", 
-               "-e", "LLM_API_BASE",
-               "-e", "SUPABASE_URL", 
-               "-e", "SUPABASE_SERVICE_KEY",
-               "-e", "USE_KNOWLEDGE_GRAPH",
-               "-e", "NEO4J_URI",
-               "-e", "NEO4J_USER",
-               "-e", "NEO4J_PASSWORD",
-               "mcp/crawl4ai"],
+      "args": ["run", "--rm", "-i", "--env-file", ".env", "mcp/rag-server"],
       "env": {
-        "TRANSPORT": "stdio",
-        "JINA_API_KEY": "your_jina_api_key",
-        "LLM_API_KEY": "your_llm_api_key",
-        "LLM_API_BASE": "https://openrouter.ai/api/v1",
-        "SUPABASE_URL": "your_supabase_url",
-        "SUPABASE_SERVICE_KEY": "your_supabase_service_key",
-        "USE_KNOWLEDGE_GRAPH": "false",
-        "NEO4J_URI": "bolt://localhost:7687",
-        "NEO4J_USER": "neo4j",
-        "NEO4J_PASSWORD": "your_neo4j_password"
+        "TRANSPORT": "stdio"
       }
     }
   }
 }
 ```
 
-## Knowledge Graph Architecture
+## 知识图谱架构
 
-The knowledge graph system stores repository code structure in Neo4j with the following components:
+知识图谱系统将代码仓库结构存储在 Neo4j 中：
 
-### Core Components (`knowledge_graphs/` folder):
+### 核心组件（`knowledge_graphs/` 目录）
 
-- **`parse_repo_into_neo4j.py`**: Clones and analyzes GitHub repositories, extracting Python classes, methods, functions, and imports into Neo4j nodes and relationships
-- **`ai_script_analyzer.py`**: Parses Python scripts using AST to extract imports, class instantiations, method calls, and function usage
-- **`knowledge_graph_validator.py`**: Validates AI-generated code against the knowledge graph to detect hallucinations (non-existent methods, incorrect parameters, etc.)
-- **`hallucination_reporter.py`**: Generates comprehensive reports about detected hallucinations with confidence scores and recommendations
-- **`query_knowledge_graph.py`**: Interactive CLI tool for exploring the knowledge graph (functionality now integrated into MCP tools)
+- **`parse_repo_into_neo4j.py`**：克隆并分析 GitHub 仓库，提取 Python 类、方法、函数和导入关系
+- **`ai_script_analyzer.py`**：使用 AST 解析 Python 脚本，提取导入、类实例化、方法调用等
+- **`knowledge_graph_validator.py`**：验证 AI 生成的代码，检测幻觉（不存在的方法、错误参数等）
+- **`hallucination_reporter.py`**：生成幻觉检测报告，包含置信度分数和建议
+- **`query_knowledge_graph.py`**：交互式 CLI 工具（功能已集成到 MCP 工具中）
 
-### Knowledge Graph Schema:
+### 知识图谱架构
 
-The Neo4j database stores code structure as:
+**节点类型：**
 
-**Nodes:**
-- `Repository`: GitHub repositories
-- `File`: Python files within repositories  
-- `Class`: Python classes with methods and attributes
-- `Method`: Class methods with parameter information
-- `Function`: Standalone functions
-- `Attribute`: Class attributes
+- `Repository`：GitHub 仓库
+- `File`：Python 文件
+- `Class`：Python 类
+- `Method`：类方法
+- `Function`：独立函数
+- `Attribute`：类属性
 
-**Relationships:**
+**关系类型：**
+
 - `Repository` -[:CONTAINS]-> `File`
 - `File` -[:DEFINES]-> `Class`
 - `File` -[:DEFINES]-> `Function`
 - `Class` -[:HAS_METHOD]-> `Method`
 - `Class` -[:HAS_ATTRIBUTE]-> `Attribute`
 
-### Workflow:
+### 使用流程
 
-1. **Repository Parsing**: Use `parse_github_repository` tool to clone and analyze open-source repositories
-2. **Code Validation**: Use `check_ai_script_hallucinations` tool to validate AI-generated Python scripts
-3. **Knowledge Exploration**: Use `query_knowledge_graph` tool to explore available repositories, classes, and methods
+1. **解析仓库**：使用 `parse_github_repository` 工具克隆并分析开源仓库
+2. **验证代码**：使用 `check_ai_script_hallucinations` 工具验证 AI 生成的 Python 脚本
+3. **探索知识**：使用 `query_knowledge_graph` 工具探索可用的仓库、类和方法
 
-## Building Your Own Server
+## 自定义开发
 
-This implementation provides a foundation for building more complex MCP servers with web crawling capabilities. To build your own:
+本实现为构建更复杂的 MCP 服务器提供了基础：
 
-1. Add your own tools by creating methods with the `@mcp.tool()` decorator
-2. Create your own lifespan function to add your own dependencies
-3. Modify the `utils.py` file for any helper functions you need
-4. Extend the crawling capabilities by adding more specialized crawlers
+1. 使用 `@mcp.tool()` 装饰器添加自定义工具
+2. 创建自定义 lifespan 函数添加依赖
+3. 修改 `utils.py` 添加辅助函数
+4. 扩展抓取能力，添加更多专用爬虫
